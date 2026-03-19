@@ -501,8 +501,7 @@ export class FigmaDesktopConnector implements IFigmaConnector {
         } catch (error) {
           return {
             success: false,
-            error: error.message,
-            stack: error.stack
+            error: error.message
           };
         }
       })()

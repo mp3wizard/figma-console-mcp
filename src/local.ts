@@ -3341,6 +3341,7 @@ Without libraryFileKey/libraryFileUrl, searches the currently open file (local c
 					.describe("Filter by category (e.g., 'Button', 'Input', 'Card')"),
 				libraryFileKey: z
 					.string()
+					.regex(/^[a-zA-Z0-9]+$/, "libraryFileKey must be alphanumeric only")
 					.optional()
 					.describe(
 						"File key of a published library to search in (for cross-file library access). Overrides local search.",
@@ -3987,6 +3988,7 @@ After instantiating components, use figma_take_screenshot to verify the result l
 					),
 				libraryFileKey: z
 					.string()
+					.regex(/^[a-zA-Z0-9]+$/, "libraryFileKey must be alphanumeric only")
 					.optional()
 					.describe(
 						"The file key of the library file (e.g., 'abc123'). Either this or libraryFileUrl is required.",
