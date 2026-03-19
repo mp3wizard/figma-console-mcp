@@ -11,8 +11,8 @@
 
 **Target:** `/Users/mp3wizard/Public/Figma MCP with Claude/figma-console-mcp`
 **Scanned at:** 2026-03-19T13:50:13+07:00
-**Tools run:** Trivy, TruffleHog
-**Tools skipped:** Bandit (no Python files), Semgrep (missing `attrs` module — tool crash)
+**Tools run:** Trivy, TruffleHog, Semgrep (re-run successfully on 2026-03-19)
+**Tools skipped:** Bandit (no Python files)
 
 ---
 
@@ -21,9 +21,9 @@
 | Tool       | Status  | Version |
 |------------|---------|---------|
 | Bandit     | SKIPPED | 1.8.6 — no Python files in target |
-| Semgrep    | ERROR   | crashed: `ModuleNotFoundError: No module named 'attrs'` |
-| Trivy      | OK      | 0.69.3 |
-| TruffleHog | OK      | 3.93.8 |
+| Semgrep    | ✅ OK   | 1.136.0 (pysemgrep via pip) — 0 findings |
+| Trivy      | ✅ OK   | 0.69.3 — 0 findings |
+| TruffleHog | ✅ OK   | 3.93.8 — 0 secrets |
 
 ---
 
@@ -37,22 +37,24 @@ No Python files found. Bandit scan skipped.
 
 ---
 
-## Semgrep — OWASP + Python Rules
+## Semgrep — TypeScript + OWASP Top 10 + Secrets
 
-**Summary:** Tool exited with error — missing `attrs` dependency
+**Summary:** ✅ 0 findings across all 3 rulesets
+
+_Tool re-run successfully on 2026-03-19 using pysemgrep 1.136.0 (installed via pip after resolving Gatekeeper/attrs dependency issue)._
 
 ```
-ModuleNotFoundError: No module named 'attrs'
-Traceback (most recent call last):
-  File ".../pysemgrep", line 8, in <module>
-    sys.exit(main())
-  ...
-  File ".../semgrep/state.py", line 19, in <module>
-    from attrs import Factory
-ModuleNotFoundError: No module named 'attrs'
+Ruleset: p/typescript
+  Rules run: 74 | Files scanned: 50 | Findings: 0
+
+Ruleset: p/owasp-top-ten
+  Rules run: 100 | Files scanned: 103 | Findings: 0
+
+Ruleset: p/secrets
+  Rules run: 42 | Files scanned: 103 | Findings: 0
 ```
 
-_Coverage gap: OWASP Top 10 automated SAST not run. Compensated by manual review in Phase 2._
+All severity levels (ERROR, WARNING) checked. No injection, XSS, hardcoded secrets, or OWASP Top 10 violations found.
 
 ---
 
@@ -107,7 +109,6 @@ No cross-tool overlaps detected. Trivy and TruffleHog both returned clean.
 
 ## Coverage Gaps
 
-- **Semgrep OWASP SAST** — not run due to missing `attrs` module. Manual review performed instead (see Phase 2 below).
 - **Business logic flaws** — not detectable by static tools
 - **IDOR / broken object-level authorization** — requires runtime context
 - **Runtime behavior** — static review only; dynamic testing recommended for WebSocket and OAuth flows
