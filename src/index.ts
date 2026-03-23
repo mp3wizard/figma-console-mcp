@@ -26,6 +26,8 @@ import { registerDesignSystemTools } from "./core/design-system-tools.js";
 import { PluginRelayDO, generatePairingCode } from "./core/cloud-websocket-relay.js";
 import { CloudWebSocketConnector } from "./core/cloud-websocket-connector.js";
 import { registerWriteTools } from "./core/write-tools.js";
+import { registerFigJamTools } from "./core/figjam-tools.js";
+import { registerSlidesTools } from "./core/slides-tools.js";
 
 // Re-export PluginRelayDO so Cloudflare Workers can bind it as a Durable Object
 export { PluginRelayDO } from "./core/cloud-websocket-relay.js";
@@ -41,7 +43,7 @@ const logger = createChildLogger({ component: "mcp-server" });
 export class FigmaConsoleMCPv3 extends McpAgent {
 	server = new McpServer({
 		name: "Figma Console MCP",
-		version: "1.15.5",
+		version: "1.17.3",
 	});
 
 	private browserManager: BrowserManager | null = null;
@@ -954,6 +956,12 @@ export class FigmaConsoleMCPv3 extends McpAgent {
 		// Register all write/manipulation tools via shared function
 		registerWriteTools(this.server, getCloudDesktopConnector);
 
+		// Register FigJam-specific tools (sticky notes, connectors, tables, etc.)
+		registerFigJamTools(this.server, getCloudDesktopConnector);
+
+		// Register Figma Slides tools (slide management, transitions, content)
+		registerSlidesTools(this.server, getCloudDesktopConnector);
+
 		// Register Figma API tools (Tools 8-14)
 		// Pass isRemoteMode: true to suppress Desktop Bridge mentions in tool descriptions
 		registerFigmaAPITools(
@@ -1216,7 +1224,7 @@ export default {
 
 			const statelessServer = new McpServer({
 				name: "Figma Console MCP",
-				version: "1.15.5",
+				version: "1.17.3",
 			});
 
 			// ================================================================
@@ -1306,6 +1314,12 @@ export default {
 
 			// Register all write/manipulation tools via shared function
 			registerWriteTools(statelessServer, getCloudDesktopConnector);
+
+			// Register FigJam-specific tools
+			registerFigJamTools(statelessServer, getCloudDesktopConnector);
+
+			// Register Figma Slides tools
+			registerSlidesTools(statelessServer, getCloudDesktopConnector);
 
 			// Register REST API tools with the authenticated Figma API
 			registerFigmaAPITools(
@@ -1992,7 +2006,7 @@ export default {
 				JSON.stringify({
 					status: "healthy",
 					service: "Figma Console MCP",
-					version: "1.15.5",
+					version: "1.17.3",
 					endpoints: {
 						mcp: ["/sse", "/mcp"],
 						oauth_mcp_spec: ["/.well-known/oauth-authorization-server", "/authorize", "/token", "/oauth/register"],
@@ -2048,13 +2062,13 @@ export default {
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Figma Console MCP - The Most Comprehensive MCP Server for Figma</title>
 	<link rel="icon" type="image/svg+xml" href="https://docs.figma-console-mcp.southleft.com/favicon.svg">
-	<meta name="description" content="Turn your Figma design system into a living API. 63+ tools give AI assistants deep access to design tokens, component specs, variables, and programmatic design creation.">
+	<meta name="description" content="Turn your Figma design system into a living API. 84+ tools give AI assistants deep access to design tokens, component specs, variables, and programmatic design creation.">
 
 	<!-- Open Graph -->
 	<meta property="og:type" content="website">
 	<meta property="og:url" content="https://figma-console-mcp.southleft.com">
 	<meta property="og:title" content="Figma Console MCP - Turn Your Design System Into a Living API">
-	<meta property="og:description" content="The most comprehensive MCP server for Figma. 63+ tools give AI assistants deep access to design tokens, components, variables, and programmatic design creation.">
+	<meta property="og:description" content="The most comprehensive MCP server for Figma. 84+ tools give AI assistants deep access to design tokens, components, variables, and programmatic design creation.">
 	<meta property="og:image" content="https://docs.figma-console-mcp.southleft.com/images/og-image.jpg">
 	<meta property="og:image:width" content="1200">
 	<meta property="og:image:height" content="630">
@@ -2062,7 +2076,7 @@ export default {
 	<!-- Twitter -->
 	<meta name="twitter:card" content="summary_large_image">
 	<meta name="twitter:title" content="Figma Console MCP - Turn Your Design System Into a Living API">
-	<meta name="twitter:description" content="The most comprehensive MCP server for Figma. 63+ tools give AI assistants deep access to design tokens, components, variables, and programmatic design creation.">
+	<meta name="twitter:description" content="The most comprehensive MCP server for Figma. 84+ tools give AI assistants deep access to design tokens, components, variables, and programmatic design creation.">
 	<meta name="twitter:image" content="https://docs.figma-console-mcp.southleft.com/images/og-image.jpg">
 
 	<meta name="theme-color" content="#0D9488">
@@ -2946,7 +2960,7 @@ export default {
 			<div class="grid-cell showcase-cell rule-left">
 				<div class="showcase-label">What AI Can Access</div>
 				<div class="showcase-stat">
-					<span class="number">59+</span>
+					<span class="number">78+</span>
 					<span class="label">MCP tools for Figma</span>
 				</div>
 				<div class="capability-list">
@@ -2973,6 +2987,10 @@ export default {
 					<div class="capability-item">
 						<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
 						<span>Visual debugging and screenshots</span>
+					</div>
+					<div class="capability-item">
+						<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="4" rx="1"/><rect x="2" y="9" width="9" height="4" rx="1"/><rect x="13" y="9" width="9" height="4" rx="1"/><rect x="2" y="15" width="20" height="4" rx="1"/></svg>
+						<span>FigJam boards and Slides presentations</span>
 					</div>
 				</div>
 			</div>
@@ -3056,6 +3074,14 @@ export default {
 					<div class="prompt-item">
 						<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
 						<span>"Connect to my Figma plugin and create a card component"</span>
+					</div>
+					<div class="prompt-item">
+						<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+						<span>"Create a retrospective board with colored stickies on FigJam"</span>
+					</div>
+					<div class="prompt-item">
+						<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+						<span>"List my slides and set a dissolve transition on each one"</span>
 					</div>
 				</div>
 			</div>

@@ -5,6 +5,93 @@ All notable changes to Figma Console MCP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.3] - 2026-03-22
+
+### Fixed
+- **Tool count accuracy** — Release script now correctly counts FigJam tools (`figjam_*`) and Slides tools in addition to `figma_*` tools. Previous releases reported 78+ tools; actual count is 84+ (75 figma + 9 figjam). Cloud mode updated from 52 to 76 tools.
+
+
+## [1.17.2] - 2026-03-22
+
+### Changed
+- **Desktop Bridge priority for variable fetching** — When the Desktop Bridge plugin is connected, `figma_get_variables` now tries it FIRST instead of the REST API. Eliminates the 2-5 second 403 timeout penalty on non-Enterprise plans. REST API is preserved as a fallback for cloud mode or if the Desktop Bridge fails.
+
+
+## [1.17.1] - 2026-03-22
+
+### Added
+- **Variable `codeSyntax` in Desktop Bridge** — Plugin now includes `codeSyntax` (CSS custom property mappings like `{ WEB: 'var(--color-primary)' }`) in all variable extraction paths. Previously only available via Enterprise REST API.
+
+### Fixed
+- **Variable alias resolution with summary/inventory verbosity** — `resolveAliases: true` now correctly returns resolved hex values at all verbosity levels. Previously, summary and inventory verbosity stripped `valuesByMode` before alias resolution ran, causing `resolvedValuesByMode` to always return empty objects.
+
+
+## [1.17.0] - 2026-03-22
+
+### Added
+- **Figma Slides support** — 15 new MCP tools enable AI assistants to manage entire Figma Slides presentations. Covers the full lifecycle: reading, creating, editing, navigating, and presenting.
+  - **`figma_list_slides`** — List all slides with IDs, names, grid positions, and skip status
+  - **`figma_get_slide_content`** — Get the full content tree of a slide (text, shapes, frames, vectors)
+  - **`figma_get_slide_grid`** — Get the 2D grid layout showing how slides are organized in rows and columns
+  - **`figma_get_slide_transition`** — Read transition settings (style, duration, curve, timing)
+  - **`figma_get_focused_slide`** — Get the currently focused slide in single-slide view
+  - **`figma_create_slide`** — Create a new blank slide with optional grid position
+  - **`figma_delete_slide`** — Delete a slide (undoable via Figma's undo)
+  - **`figma_duplicate_slide`** — Clone an existing slide
+  - **`figma_reorder_slides`** — Reorder slides via new 2D array of slide IDs
+  - **`figma_set_slide_transition`** — Set transition effects with 22 styles (DISSOLVE, SMART_ANIMATE, directional slides/pushes/moves), 8 easing curves (LINEAR, EASE_IN/OUT, GENTLE, QUICK, BOUNCY, SLOW), and configurable duration
+  - **`figma_skip_slide`** — Toggle whether a slide is skipped during presentation mode
+  - **`figma_add_text_to_slide`** — Add text elements with configurable position and font size
+  - **`figma_add_shape_to_slide`** — Add rectangles or ellipses with hex color fills
+  - **`figma_set_slides_view_mode`** — Toggle between grid and single-slide view
+  - **`figma_focus_slide`** — Navigate to and focus a specific slide
+- **Slides documentation page** — Dedicated guide covering all 15 tools, use cases, transitions, and example prompts for designers.
+- **Cloud mode support** — All Slides tools registered in both local and cloud entry points.
+
+### Changed
+- **Editor type detection extended** — Plugin now reports and handles `slides` editor type alongside `figma`, `figjam`, and `dev`. Variables bootstrap skipped in Slides mode (no variables API).
+- **Manifest updated** — Added `"slides"` to `editorType` array in manifest.json.
+
+### Fixed
+- **Slides API corrections** — Four runtime API issues discovered and fixed during live testing:
+  - `node.isSkippedSlide` (not `node.skipped`) for skip status
+  - `figma.viewport.slidesView` (not `slidesMode`) for view mode control
+  - Easing curves: `GENTLE`, `QUICK`, `BOUNCY`, `SLOW` (not `_BACK` variants which are for prototype interactions only)
+  - Grid rows are array-like with numeric indices (not objects with `.children`)
+  - `setSlideGrid()` expects existing SlideNode reference arrays from `getSlideGrid()`, not newly created SlideRow objects
+
+### Contributors
+- **Toni Haidamous (Tonihaydamous)** — Original Slides tool design and product vision (PR #11)
+
+## [1.16.0] - 2026-03-22
+
+### Added
+- **FigJam board support** — 9 new MCP tools enable AI assistants to create and read FigJam collaborative boards. Opens the MCP server to an entirely new Figma product surface.
+  - **`figjam_create_sticky`** — Create a sticky note with 9 color options (YELLOW, BLUE, GREEN, PINK, ORANGE, PURPLE, RED, LIGHT_GRAY, GRAY)
+  - **`figjam_create_stickies`** — Batch create up to 200 sticky notes in one call. Ideal for populating boards from meeting notes, brainstorm ideas, or structured data.
+  - **`figjam_create_connector`** — Connect two nodes with a labeled connector line. Build flowcharts, relationship maps, and process diagrams.
+  - **`figjam_create_shape_with_text`** — Create labeled shapes (ROUNDED_RECTANGLE, DIAMOND, ELLIPSE, TRIANGLE_UP/DOWN, PARALLELOGRAM, ENG_DATABASE, ENG_QUEUE, ENG_FILE, ENG_FOLDER) for flowchart nodes and visual organization.
+  - **`figjam_create_table`** — Create tables with cell data (up to 100 rows x 50 columns). Populate with 2D string arrays for comparison matrices and structured data display.
+  - **`figjam_create_code_block`** — Create code blocks with language syntax highlighting (JAVASCRIPT, PYTHON, TYPESCRIPT, JSON, HTML, CSS, etc.).
+  - **`figjam_auto_arrange`** — Arrange nodes in grid, horizontal, or vertical layouts with configurable spacing and column count.
+  - **`figjam_get_board_contents`** — Read all content from a FigJam board with type-specific serialization (sticky text/colors, shape types, connector endpoints, table cell data, code content). Supports filtering by node type and pagination.
+  - **`figjam_get_connections`** — Read the connection graph from a FigJam board. Returns all connectors as edges with start/end node references and labels, plus a lookup map of connected nodes.
+- **Editor type detection** — Plugin reports `figma.editorType` (figma, figjam, dev) via WebSocket FILE_INFO. `figma_get_status` now exposes `editorType` so AI agents know which tools are available.
+- **FigJam documentation page** — Dedicated guide covering all 9 tools, use cases, and example prompts.
+
+### Changed
+- **Variables bootstrap skipped in FigJam** — The plugin no longer attempts to fetch variables when running in a FigJam board (FigJam has no variables API), preventing unnecessary errors.
+- **Enum-validated schemas** — Sticky colors, shape types, and board content node type filters now use `z.enum()` instead of `z.string()` for stricter validation and better LLM tool discovery. Gemini-compatible (no `z.any()`).
+- **Shared color map in plugin** — Extracted duplicated sticky color map to a single module-level constant in `code.js` for DRY compliance.
+
+### Security
+- **Code injection prevention** — `figjam_auto_arrange` uses `JSON.stringify()` for proper JS string escaping instead of manual single-quote replacement, handling all control characters including Unicode line/paragraph separators.
+- **Input bounds** — All FigJam tools enforce maximum sizes: 200 batch stickies, 100x50 table, 5000 char text, 50000 char code, 500 arrange nodes, 1000 read nodes.
+
+### Contributors
+- **klgral (G Klas)** — Original FigJam write tools implementation (PR #33)
+- **lukemoderwell (Luke Moderwell)** — FigJam read tools, documentation, and E2E testing (PR #47)
+
 ## [1.15.5] - 2026-03-19
 
 ### Fixed
@@ -385,6 +472,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Real-time Figma Desktop Bridge plugin
 - Support for both local (stdio) and Cloudflare Workers deployment
 
+[1.17.3]: https://github.com/southleft/figma-console-mcp/compare/v1.17.2...v1.17.3
+[1.17.2]: https://github.com/southleft/figma-console-mcp/compare/v1.17.1...v1.17.2
+[1.17.1]: https://github.com/southleft/figma-console-mcp/compare/v1.17.0...v1.17.1
 [1.15.5]: https://github.com/southleft/figma-console-mcp/compare/v1.15.4...v1.15.5
 [1.15.0]: https://github.com/southleft/figma-console-mcp/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/southleft/figma-console-mcp/compare/v1.13.1...v1.14.0
