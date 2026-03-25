@@ -34,6 +34,8 @@ import {
 import { registerFigmaAPITools } from "./core/figma-tools.js";
 import { registerDesignCodeTools } from "./core/design-code-tools.js";
 import { registerCommentTools } from "./core/comment-tools.js";
+import { registerAnnotationTools } from "./core/annotation-tools.js";
+import { registerDeepComponentTools } from "./core/deep-component-tools.js";
 import { registerDesignSystemTools } from "./core/design-system-tools.js";
 import { FigmaDesktopConnector } from "./core/figma-desktop-connector.js";
 import type { IFigmaConnector } from "./core/figma-connector.js";
@@ -48,6 +50,7 @@ import {
 	discoverActiveInstances,
 	cleanupStalePortFiles,
 	cleanupOrphanedProcesses,
+	evictOldestInstance,
 	refreshPortAdvertisement,
 	HEARTBEAT_INTERVAL_MS,
 } from "./core/port-discovery.js";
@@ -1598,6 +1601,7 @@ If Design Systems Assistant MCP is not available, install it from: https://githu
 									if ('opacity' in node) info.opacity = node.opacity;
 									if ('cornerRadius' in node) info.cornerRadius = node.cornerRadius;
 									if ('componentProperties' in node) info.componentProperties = node.componentProperties;
+									if ('annotations' in node && node.annotations && node.annotations.length > 0) info.annotations = node.annotations;
 									results.push(info);
 								}
 								return results;`,
@@ -5792,6 +5796,18 @@ return {
 			this.variablesCache,
 		);
 
+		// Register Annotation tools (read/write design annotations via Desktop Bridge)
+		registerAnnotationTools(
+			this.server,
+			() => this.getDesktopConnector(),
+		);
+
+		// Register Deep Component tools (full Plugin API tree extraction for code generation)
+		registerDeepComponentTools(
+			this.server,
+			() => this.getDesktopConnector(),
+		);
+
 		// Register FigJam-specific tools (sticky notes, connectors, tables, etc.)
 		registerFigJamTools(
 			this.server,
@@ -6245,6 +6261,37 @@ return {
 					);
 					this.wsServer = null;
 					break;
+				}
+			}
+
+			// Phase 3: If all ports exhausted, try evicting the oldest instance and retry ONCE
+			if (!boundPort && evictOldestInstance(this.wsPreferredPort)) {
+				for (const port of portsToTry) {
+					try {
+						this.wsServer = new FigmaWebSocketServer({ port, host: wsHost });
+						await this.wsServer.start();
+						const addr = this.wsServer.address();
+						boundPort = addr?.port ?? port;
+						this.wsActualPort = boundPort;
+						logger.info(
+							{ wsPort: boundPort, eviction: true },
+							"WebSocket bridge server started after evicting stale instance",
+						);
+						advertisePort(boundPort, wsHost);
+						registerPortCleanup(boundPort);
+						const heartbeatPort = boundPort;
+						this.wsHeartbeatTimer = setInterval(() => refreshPortAdvertisement(heartbeatPort), HEARTBEAT_INTERVAL_MS);
+						this.wsHeartbeatTimer.unref();
+						break;
+					} catch (wsError) {
+						const errorCode = wsError instanceof Error ? (wsError as any).code : undefined;
+						if (errorCode === "EADDRINUSE") {
+							this.wsServer = null;
+							continue;
+						}
+						this.wsServer = null;
+						break;
+					}
 				}
 			}
 

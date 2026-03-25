@@ -5,6 +5,49 @@ All notable changes to Figma Console MCP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0] - 2026-03-25
+
+### Added
+- **High-fidelity design-to-code context** — Major enhancement to `figma_get_component_for_development`:
+  - **Depth 2 → 4** across all design-to-code tools. Deeply nested components (data tables, nested menus, compound forms) now visible.
+  - **18 new properties** in component output: `boundVariables` (design token bindings), `reactions` (prototype interactions), `layoutSizingHorizontal/Vertical` (CSS sizing), `minWidth/maxWidth/minHeight/maxHeight` (responsive constraints), `counterAxisSpacing`/`layoutWrap` (flex-wrap), `textAutoResize/textTruncation/textCase/textDecoration`, `componentPropertyReferences`, `styles` (shared style refs).
+  - **Adaptive truncation** — responses >500KB auto-compress to prevent context overflow.
+  - **Annotation enrichment** — fetches designer annotations via Desktop Bridge when connected.
+- **`figma_get_component_for_development_deep`** — New MCP tool for unlimited-depth component extraction via Plugin API. Resolves `boundVariables` to actual token names (not just IDs), follows `mainComponent` references on INSTANCE nodes, extracts `reactions` and `annotations` at every tree level.
+- **`figma_analyze_component_set`** — New MCP tool for variant state machine analysis. Maps Figma state variants to CSS pseudo-classes (hover→`:hover`, focus→`:focus-visible`, disabled→`:disabled`, error→`[aria-invalid]`). Produces cross-variant diffs showing only changed properties per state with resolved token names.
+- **Codebase component scanning** — New `codebasePath` parameter on `figma_get_component_for_development`. Scans the target codebase for existing components, cross-references against Figma sub-component dependencies, marks each as IMPORT_EXISTING or BUILD_NEW. Prevents recreating existing components with inline markup. Model-agnostic — works for any AI client.
+- **Composition dependency detection** — Component responses now include `compositionDependencies` listing every INSTANCE sub-component used, with explicit instructions to build sub-components as standalone before composing the parent.
+
+### Changed
+- **Enrichment service** — `hardcoded_values` detection and `variables_used` extraction now functional (previously stubbed). Token coverage calculates meaningful percentages.
+- **`getComponentData()` helper** — depth parameter now configurable (default 4, was hardcoded 2).
+- **`figma_check_design_parity`** — depth increased from 2 to 4.
+
+### Fixed
+- **componentProperties bloat** — Icon instances with 200KB+ instance swap catalogs now capped at 10KB summaries.
+- **fillGeometry bloat** — SVG path data restricted to VECTOR/icon nodes only (was included on every frame).
+
+
+## [1.18.0] - 2026-03-24
+
+### Added
+- **Design Annotations** — 3 new tools for reading, writing, and managing Figma design annotations via the Desktop Bridge plugin:
+  - `figma_get_annotations` — Read annotations from nodes with optional child traversal and depth control. Returns plain text labels, markdown labels, pinned design properties, and annotation categories.
+  - `figma_set_annotations` — Write or clear annotations on nodes. Supports plain text, rich markdown, pinned properties (fills, width, fontSize, etc.), annotation categories, and append mode. Pass an empty array to clear.
+  - `figma_get_annotation_categories` — List available annotation categories in the current file.
+- **Annotation enrichment** — `figma_get_component_for_development` now surfaces an annotation summary in its response. `figma_generate_component_doc` includes a "Design Annotations" section with full markdown rendering of designer-authored specs.
+
+### Fixed
+- **Annotation append mode** — When appending annotations, existing annotations are now correctly preserved. Figma auto-populates both `label` and `labelMarkdown` on read, but rejects writing both when they differ. The append logic now prefers `labelMarkdown` to avoid validation errors.
+
+
+## [1.17.4] - 2026-03-24
+
+### Fixed
+- **Port exhaustion auto-recovery** — When all 10 WebSocket ports (9223–9232) are occupied by stale MCP server processes from old sessions, the server now automatically evicts the oldest instance to free a port. Previously, users had to manually kill processes. Safety guards: only triggers after both existing cleanup phases fail, won't evict instances younger than 2 minutes, never evicts its own PID, retries port binding exactly once.
+- **PAT scope documentation** — Setup guide now specifies the three required Figma Personal Access Token scopes: File content (Read), Variables (Read), Comments (Read and write).
+
+
 ## [1.17.3] - 2026-03-22
 
 ### Fixed
@@ -472,6 +515,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Real-time Figma Desktop Bridge plugin
 - Support for both local (stdio) and Cloudflare Workers deployment
 
+[1.19.0]: https://github.com/southleft/figma-console-mcp/compare/v1.18.0...v1.19.0
+[1.18.0]: https://github.com/southleft/figma-console-mcp/compare/v1.17.4...v1.18.0
+[1.17.4]: https://github.com/southleft/figma-console-mcp/compare/v1.17.3...v1.17.4
 [1.17.3]: https://github.com/southleft/figma-console-mcp/compare/v1.17.2...v1.17.3
 [1.17.2]: https://github.com/southleft/figma-console-mcp/compare/v1.17.1...v1.17.2
 [1.17.1]: https://github.com/southleft/figma-console-mcp/compare/v1.17.0...v1.17.1

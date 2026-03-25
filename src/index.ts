@@ -22,6 +22,8 @@ import { FigmaAPI, extractFileKey, formatVariables, formatComponentData } from "
 import { registerFigmaAPITools } from "./core/figma-tools.js";
 import { registerDesignCodeTools } from "./core/design-code-tools.js";
 import { registerCommentTools } from "./core/comment-tools.js";
+import { registerAnnotationTools } from "./core/annotation-tools.js";
+import { registerDeepComponentTools } from "./core/deep-component-tools.js";
 import { registerDesignSystemTools } from "./core/design-system-tools.js";
 import { PluginRelayDO, generatePairingCode } from "./core/cloud-websocket-relay.js";
 import { CloudWebSocketConnector } from "./core/cloud-websocket-connector.js";
@@ -43,7 +45,7 @@ const logger = createChildLogger({ component: "mcp-server" });
 export class FigmaConsoleMCPv3 extends McpAgent {
 	server = new McpServer({
 		name: "Figma Console MCP",
-		version: "1.17.3",
+		version: "1.19.0",
 	});
 
 	private browserManager: BrowserManager | null = null;
@@ -959,6 +961,12 @@ export class FigmaConsoleMCPv3 extends McpAgent {
 		// Register FigJam-specific tools (sticky notes, connectors, tables, etc.)
 		registerFigJamTools(this.server, getCloudDesktopConnector);
 
+		// Register Annotation tools (read/write design annotations via Desktop Bridge)
+		registerAnnotationTools(this.server, getCloudDesktopConnector);
+
+		// Register Deep Component tools (Plugin API tree extraction for code generation)
+		registerDeepComponentTools(this.server, getCloudDesktopConnector);
+
 		// Register Figma Slides tools (slide management, transitions, content)
 		registerSlidesTools(this.server, getCloudDesktopConnector);
 
@@ -1224,7 +1232,7 @@ export default {
 
 			const statelessServer = new McpServer({
 				name: "Figma Console MCP",
-				version: "1.17.3",
+				version: "1.19.0",
 			});
 
 			// ================================================================
@@ -1317,6 +1325,12 @@ export default {
 
 			// Register FigJam-specific tools
 			registerFigJamTools(statelessServer, getCloudDesktopConnector);
+
+			// Register Annotation tools
+			registerAnnotationTools(statelessServer, getCloudDesktopConnector);
+
+			// Register Deep Component tools
+			registerDeepComponentTools(statelessServer, getCloudDesktopConnector);
 
 			// Register Figma Slides tools
 			registerSlidesTools(statelessServer, getCloudDesktopConnector);
@@ -2006,7 +2020,7 @@ export default {
 				JSON.stringify({
 					status: "healthy",
 					service: "Figma Console MCP",
-					version: "1.17.3",
+					version: "1.19.0",
 					endpoints: {
 						mcp: ["/sse", "/mcp"],
 						oauth_mcp_spec: ["/.well-known/oauth-authorization-server", "/authorize", "/token", "/oauth/register"],
@@ -2062,13 +2076,13 @@ export default {
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Figma Console MCP - The Most Comprehensive MCP Server for Figma</title>
 	<link rel="icon" type="image/svg+xml" href="https://docs.figma-console-mcp.southleft.com/favicon.svg">
-	<meta name="description" content="Turn your Figma design system into a living API. 84+ tools give AI assistants deep access to design tokens, component specs, variables, and programmatic design creation.">
+	<meta name="description" content="Turn your Figma design system into a living API. 89+ tools give AI assistants deep access to design tokens, component specs, variables, and programmatic design creation.">
 
 	<!-- Open Graph -->
 	<meta property="og:type" content="website">
 	<meta property="og:url" content="https://figma-console-mcp.southleft.com">
 	<meta property="og:title" content="Figma Console MCP - Turn Your Design System Into a Living API">
-	<meta property="og:description" content="The most comprehensive MCP server for Figma. 84+ tools give AI assistants deep access to design tokens, components, variables, and programmatic design creation.">
+	<meta property="og:description" content="The most comprehensive MCP server for Figma. 89+ tools give AI assistants deep access to design tokens, components, variables, and programmatic design creation.">
 	<meta property="og:image" content="https://docs.figma-console-mcp.southleft.com/images/og-image.jpg">
 	<meta property="og:image:width" content="1200">
 	<meta property="og:image:height" content="630">
@@ -2076,7 +2090,7 @@ export default {
 	<!-- Twitter -->
 	<meta name="twitter:card" content="summary_large_image">
 	<meta name="twitter:title" content="Figma Console MCP - Turn Your Design System Into a Living API">
-	<meta name="twitter:description" content="The most comprehensive MCP server for Figma. 84+ tools give AI assistants deep access to design tokens, components, variables, and programmatic design creation.">
+	<meta name="twitter:description" content="The most comprehensive MCP server for Figma. 89+ tools give AI assistants deep access to design tokens, components, variables, and programmatic design creation.">
 	<meta name="twitter:image" content="https://docs.figma-console-mcp.southleft.com/images/og-image.jpg">
 
 	<meta name="theme-color" content="#0D9488">
@@ -2355,20 +2369,20 @@ export default {
 		}
 
 		.capability-list {
-			display: flex;
-			flex-direction: column;
-			gap: 12px;
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 10px;
 		}
 
 		.capability-item {
 			display: flex;
 			align-items: center;
-			gap: 12px;
-			padding: 12px 16px;
+			gap: 10px;
+			padding: 10px 14px;
 			background: var(--color-bg-elevated);
 			border: 1px solid var(--color-border);
 			border-radius: var(--radius-md);
-			font-size: 14px;
+			font-size: 13px;
 			color: var(--color-text-secondary);
 			transition: all var(--transition);
 		}
@@ -2843,6 +2857,9 @@ export default {
 			.showcase-cell {
 				padding-top: 32px;
 			}
+			.capability-list {
+				grid-template-columns: 1fr;
+			}
 			.capability-card {
 				grid-column: span 12;
 				padding: 0 !important;
@@ -2960,7 +2977,7 @@ export default {
 			<div class="grid-cell showcase-cell rule-left">
 				<div class="showcase-label">What AI Can Access</div>
 				<div class="showcase-stat">
-					<span class="number">78+</span>
+					<span class="number">87+</span>
 					<span class="label">MCP tools for Figma</span>
 				</div>
 				<div class="capability-list">
@@ -2987,6 +3004,10 @@ export default {
 					<div class="capability-item">
 						<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
 						<span>Visual debugging and screenshots</span>
+					</div>
+					<div class="capability-item">
+						<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"/></svg>
+						<span>Design annotations and dev specs</span>
 					</div>
 					<div class="capability-item">
 						<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="4" rx="1"/><rect x="2" y="9" width="9" height="4" rx="1"/><rect x="13" y="9" width="9" height="4" rx="1"/><rect x="2" y="15" width="20" height="4" rx="1"/></svg>

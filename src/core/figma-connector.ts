@@ -96,6 +96,17 @@ export interface IFigmaConnector {
   addTextToSlide(params: { slideId: string; text: string; x?: number; y?: number; fontSize?: number }): Promise<any>;
   addShapeToSlide(params: { slideId: string; shapeType: string; x: number; y: number; width: number; height: number; fillColor?: string }): Promise<any>;
 
+  // Annotation operations
+  getAnnotations(nodeId: string, includeChildren?: boolean, depth?: number): Promise<any>;
+  setAnnotations(nodeId: string, annotations: any[], mode?: 'replace' | 'append'): Promise<any>;
+  getAnnotationCategories(): Promise<any>;
+
+  // Deep component extraction (full visual tree with tokens, interactions, instance refs)
+  deepGetComponent(nodeId: string, depth?: number): Promise<any>;
+
+  // Component set analysis (variant state machine + cross-variant diff)
+  analyzeComponentSet(nodeId: string): Promise<any>;
+
   // Cache management
   clearFrameCache(): void;
 }

@@ -5,6 +5,8 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import * as fs from "fs";
+import * as path from "path";
 import type { FigmaAPI, FigmaUrlInfo } from "./figma-api.js";
 import { extractFileKey, extractFigmaUrlInfo, formatVariables, formatComponentData, withTimeout } from "./figma-api.js";
 import { createChildLogger } from "./logger.js";
@@ -18,6 +20,68 @@ const logger = createChildLogger({ component: "figma-tools" });
 
 // Initialize enrichment service
 const enrichmentService = new EnrichmentService(logger);
+
+/**
+ * Scan a codebase components directory to discover existing components.
+ * Returns a registry of component names, paths, and exports.
+ * Works with any framework — looks for index.ts/tsx/js barrel exports.
+ */
+function scanCodebaseComponents(componentsDir: string): { name: string; path: string; exports: string[] }[] {
+	const registry: { name: string; path: string; exports: string[] }[] = [];
+	try {
+		if (!fs.existsSync(componentsDir)) return registry;
+		const dirs = fs.readdirSync(componentsDir, { withFileTypes: true });
+		for (const dir of dirs) {
+			if (!dir.isDirectory()) continue;
+			const compDir = path.join(componentsDir, dir.name);
+			// Look for barrel export (index.ts, index.tsx, index.js)
+			const barrelFiles = ["index.ts", "index.tsx", "index.js"];
+			let barrelPath = "";
+			for (const bf of barrelFiles) {
+				const candidate = path.join(compDir, bf);
+				if (fs.existsSync(candidate)) { barrelPath = candidate; break; }
+			}
+			if (!barrelPath) {
+				// No barrel — check for a main component file matching the directory name
+				const mainFiles = [`${dir.name}.tsx`, `${dir.name}.ts`, `${dir.name}.jsx`, `${dir.name}.js`];
+				for (const mf of mainFiles) {
+					if (fs.existsSync(path.join(compDir, mf))) {
+						registry.push({ name: dir.name, path: `src/components/${dir.name}`, exports: [dir.name] });
+						break;
+					}
+				}
+				continue;
+			}
+			// Parse exports from barrel file
+			try {
+				const content = fs.readFileSync(barrelPath, "utf-8");
+				const exportNames: string[] = [];
+				// Match: export { Foo, Bar } from ...
+				const namedExports = content.matchAll(/export\s*\{([^}]+)\}/g);
+				for (const match of namedExports) {
+					const names = match[1].split(",").map(n => n.trim().split(/\s+as\s+/).pop()?.trim() || "").filter(Boolean);
+					exportNames.push(...names.filter(n => !n.startsWith("type ")));
+				}
+				// Match: export default ...
+				if (content.includes("export default")) {
+					exportNames.push("default");
+				}
+				// Filter out type-only exports
+				const cleanExports = exportNames.filter(n => !n.startsWith("type") || n[4] !== " ");
+				registry.push({
+					name: dir.name,
+					path: `src/components/${dir.name}`,
+					exports: cleanExports.length > 0 ? cleanExports : [dir.name],
+				});
+			} catch {
+				registry.push({ name: dir.name, path: `src/components/${dir.name}`, exports: [dir.name] });
+			}
+		}
+	} catch (err) {
+		logger.debug({ err, componentsDir }, "Could not scan codebase components directory");
+	}
+	return registry;
+}
 
 // Initialize snippet injector
 const snippetInjector = new SnippetInjector();
@@ -2517,6 +2581,22 @@ export function registerFigmaAPITools(
 								);
 							}
 
+							// Surface annotation summary at top level for easy AI consumption
+							const annotations = formatted.annotations || [];
+							const annotationSummary = annotations.length > 0
+								? {
+									count: annotations.length,
+									labels: annotations
+										.filter((a: any) => a.label || a.labelMarkdown)
+										.map((a: any) => a.label || (a.labelMarkdown ? a.labelMarkdown.substring(0, 100) : null))
+										.filter(Boolean),
+									pinnedProperties: annotations
+										.filter((a: any) => a.properties && a.properties.length > 0)
+										.flatMap((a: any) => a.properties.map((p: any) => p.type)),
+									hint: "Use figma_get_annotations for full annotation details including categories and markdown content",
+								}
+								: { count: 0, hint: "No annotations found. Designers can add annotations in Dev Mode to communicate specs." };
+
 							return {
 								content: [
 									{
@@ -2526,6 +2606,7 @@ export function registerFigmaAPITools(
 												fileKey,
 												nodeId,
 												component: formatted,
+												annotations: annotationSummary,
 												source: "desktop_bridge_plugin",
 												enriched: enrich || false,
 												note: "Retrieved via Desktop Bridge plugin - description fields and annotations are reliable and current"
@@ -3013,7 +3094,7 @@ export function registerFigmaAPITools(
 	// Tool 13: Get Component for Development (UI Implementation)
 	server.tool(
 		"figma_get_component_for_development",
-		"Get component data optimized for UI implementation, includes rendered image + filtered implementation context (layout, typography, visual properties). Use when user asks to: 'build this component', 'implement this in React/Vue', 'generate code for', or needs both visual reference and technical specs. Automatically includes 2x scale image unless includeImage=false. Best for: UI development, code generation, design-to-code workflows. For just metadata, use figma_get_component; for just image, use figma_get_component_image.",
+		"Get component data optimized for high-fidelity UI implementation. Returns a deep component tree (depth 4) with design tokens (boundVariables), interaction states (reactions), sizing constraints (min/max/layoutSizing), text behavior (autoResize, truncation), and design annotations. Automatically includes 2x rendered image. Use when user asks to: 'build this component', 'implement this in React/Vue', 'generate code for', or needs both visual reference and technical specs for production-quality, accessible, token-aware code. For just metadata/descriptions, use figma_get_component. For just image, use figma_get_component_image. For full annotation details, use figma_get_annotations. To resolve variable IDs to names/values, use figma_get_variables.",
 		{
 			fileUrl: z
 				.string()
@@ -3030,8 +3111,12 @@ export function registerFigmaAPITools(
 				.optional()
 				.default(true)
 				.describe("Include rendered image for visual reference (default: true)"),
+			codebasePath: z
+				.string()
+				.optional()
+				.describe("Path to target codebase components directory (e.g., '/Users/me/project/src/components'). When provided, scans for existing components and includes a registry in the response to prevent recreating components that already exist. Strongly recommended for design-to-code workflows."),
 		},
-		async ({ fileUrl, nodeId, includeImage }) => {
+		async ({ fileUrl, nodeId, includeImage, codebasePath }) => {
 			try {
 				let api;
 				try {
@@ -3063,15 +3148,16 @@ export function registerFigmaAPITools(
 
 				logger.info({ fileKey, nodeId, includeImage }, "Fetching component for development");
 
-				// Get node data with depth for children
-				const nodeData = await api.getNodes(fileKey, [nodeId], { depth: 2 });
+				// Get node data with depth 4 for nested component structures
+				// (depth 2 was too shallow for complex components like data tables, nested menus, etc.)
+				const nodeData = await api.getNodes(fileKey, [nodeId], { depth: 4 });
 				const node = nodeData.nodes?.[nodeId]?.document;
 
 				if (!node) {
 					throw new Error(`Component not found: ${nodeId}`);
 				}
 
-				// Filter to visual/layout properties only
+				// Filter to development-relevant properties — visual, layout, tokens, interactions
 				const filterForDevelopment = (n: any): any => {
 					if (!n) return n;
 
@@ -3103,8 +3189,18 @@ export function registerFigmaAPITools(
 					if (n.paddingTop !== undefined) result.paddingTop = n.paddingTop;
 					if (n.paddingBottom !== undefined) result.paddingBottom = n.paddingBottom;
 					if (n.itemSpacing !== undefined) result.itemSpacing = n.itemSpacing;
+					if (n.counterAxisSpacing !== undefined) result.counterAxisSpacing = n.counterAxisSpacing;
 					if (n.itemReverseZIndex) result.itemReverseZIndex = n.itemReverseZIndex;
 					if (n.strokesIncludedInLayout) result.strokesIncludedInLayout = n.strokesIncludedInLayout;
+					if (n.layoutWrap) result.layoutWrap = n.layoutWrap;
+
+					// Sizing constraints (maps to CSS min/max-width/height, width: auto/100%/fixed)
+					if (n.layoutSizingHorizontal) result.layoutSizingHorizontal = n.layoutSizingHorizontal;
+					if (n.layoutSizingVertical) result.layoutSizingVertical = n.layoutSizingVertical;
+					if (n.minWidth !== undefined) result.minWidth = n.minWidth;
+					if (n.maxWidth !== undefined) result.maxWidth = n.maxWidth;
+					if (n.minHeight !== undefined) result.minHeight = n.minHeight;
+					if (n.maxHeight !== undefined) result.maxHeight = n.maxHeight;
 
 					// Visual properties
 					if (n.fills) result.fills = n.fills;
@@ -3122,17 +3218,55 @@ export function registerFigmaAPITools(
 					if (n.isMask) result.isMask = n.isMask;
 					if (n.clipsContent) result.clipsContent = n.clipsContent;
 
+					// Design tokens — variable bindings (maps fills/strokes/spacing/etc. to design tokens)
+					if (n.boundVariables) result.boundVariables = n.boundVariables;
+					if (n.styles) result.styles = n.styles;
+
+					// Vector geometry (SVG path data — only for vector/icon nodes, not regular frames)
+					const isVectorLike = n.type === 'VECTOR' || n.type === 'BOOLEAN_OPERATION' || n.type === 'LINE' || n.type === 'REGULAR_POLYGON' || n.type === 'STAR' || n.type === 'ELLIPSE';
+					if (isVectorLike) {
+						if (n.fillGeometry) result.fillGeometry = n.fillGeometry;
+						if (n.strokeGeometry) result.strokeGeometry = n.strokeGeometry;
+					}
+
 					// Typography
 					if (n.characters) result.characters = n.characters;
 					if (n.style) result.style = n.style;
 					if (n.characterStyleOverrides) result.characterStyleOverrides = n.characterStyleOverrides;
 					if (n.styleOverrideTable) result.styleOverrideTable = n.styleOverrideTable;
 
+					// Text behavior (maps to CSS overflow, text-overflow, white-space, text-transform)
+					if (n.textAutoResize) result.textAutoResize = n.textAutoResize;
+					if (n.textTruncation) result.textTruncation = n.textTruncation;
+					if (n.textCase) result.textCase = n.textCase;
+					if (n.textDecoration) result.textDecoration = n.textDecoration;
+
 					// Component properties & variants
-					if (n.componentProperties) result.componentProperties = n.componentProperties;
+					if (n.componentProperties) {
+						// Cap componentProperties size — icon instances can have 200KB+ of swap variants
+						const cpJson = JSON.stringify(n.componentProperties);
+						if (cpJson.length > 10000) {
+							// Extract just the property names and types, not the full value catalogs
+							const summary: any = {};
+							for (const [key, val] of Object.entries(n.componentProperties as Record<string, any>)) {
+								summary[key] = { type: val.type, value: typeof val.value === 'string' && val.value.length > 200 ? val.value.substring(0, 200) + '...' : val.value };
+							}
+							result.componentProperties = summary;
+							result._componentPropertiesTruncated = true;
+						} else {
+							result.componentProperties = n.componentProperties;
+						}
+					}
 					if (n.componentPropertyDefinitions) result.componentPropertyDefinitions = n.componentPropertyDefinitions;
+					if (n.componentPropertyReferences) result.componentPropertyReferences = n.componentPropertyReferences;
 					if (n.variantProperties) result.variantProperties = n.variantProperties;
 					if (n.componentId) result.componentId = n.componentId;
+
+					// Prototype interactions (hover, click, focus states and transitions)
+					if (n.reactions && n.reactions.length > 0) result.reactions = n.reactions;
+					if (n.transitionNodeID) result.transitionNodeID = n.transitionNodeID;
+					if (n.transitionDuration !== undefined) result.transitionDuration = n.transitionDuration;
+					if (n.transitionEasing) result.transitionEasing = n.transitionEasing;
 
 					// State
 					if (n.visible !== undefined) result.visible = n.visible;
@@ -3147,6 +3281,57 @@ export function registerFigmaAPITools(
 				};
 
 				const componentData = filterForDevelopment(node);
+
+				// Fetch annotations and descriptions via Desktop Bridge if available
+				// (REST API never has annotations; Desktop Bridge has reliable descriptions)
+				let annotations: any[] = [];
+				let annotationSummary: any = { count: 0 };
+				if (getDesktopConnector) {
+					try {
+						const connector = await getDesktopConnector();
+						// Fetch annotations with child traversal (depth matches REST traversal)
+						const annotResult = await connector.getAnnotations(nodeId, true, 4);
+						if (annotResult?.success !== false && annotResult?.data) {
+							const data = annotResult.data;
+							annotations = data.annotations || [];
+							const childAnnotations = data.children || [];
+							const allAnnotations = [
+								...annotations,
+								...childAnnotations.flatMap((c: any) => (c.annotations || []).map((a: any) => ({ ...a, nodeId: c.nodeId, nodeName: c.nodeName })))
+							];
+							annotationSummary = allAnnotations.length > 0
+								? {
+									count: allAnnotations.length,
+									labels: allAnnotations
+										.filter((a: any) => a.label || a.labelMarkdown)
+										.map((a: any) => ({
+											text: a.labelMarkdown || a.label,
+											...(a.nodeId ? { onNode: a.nodeName } : {}),
+										})),
+									pinnedProperties: allAnnotations
+										.filter((a: any) => a.properties && a.properties.length > 0)
+										.flatMap((a: any) => a.properties.map((p: any) => p.type)),
+								}
+								: { count: 0 };
+						}
+
+						// Also fetch description from bridge if REST returned empty
+						if (!componentData.description && !componentData.descriptionMarkdown) {
+							const bridgeResult = await connector.getComponentFromPluginUI(nodeId);
+							if (bridgeResult?.success && bridgeResult.component) {
+								if (bridgeResult.component.descriptionMarkdown) {
+									componentData.descriptionMarkdown = bridgeResult.component.descriptionMarkdown;
+								}
+								if (bridgeResult.component.description) {
+									componentData.description = bridgeResult.component.description;
+								}
+							}
+						}
+					} catch {
+						// Desktop Bridge unavailable — continue without annotations
+						logger.debug("Desktop Bridge unavailable for annotations/description enrichment");
+					}
+				}
 
 				// Get image if requested
 				let imageUrl = null;
@@ -3163,25 +3348,145 @@ export function registerFigmaAPITools(
 					}
 				}
 
-				// Build response with component data and image URL
+				// Extract composition dependencies — every INSTANCE sub-component used
+				// This tells the AI which sub-components must exist before building this component
+				const compositionDeps = new Map<string, { name: string; componentId: string; count: number; props: string[] }>();
+				const walkForInstances = (n: any) => {
+					if (!n) return;
+					if (n.type === "INSTANCE" && n.componentId) {
+						const existing = compositionDeps.get(n.componentId);
+						if (existing) {
+							existing.count++;
+						} else {
+							compositionDeps.set(n.componentId, {
+								name: n.name,
+								componentId: n.componentId,
+								count: 1,
+								props: n.componentProperties ? Object.keys(n.componentProperties) : [],
+							});
+						}
+					}
+					if (n.children) {
+						for (const child of n.children) {
+							walkForInstances(child);
+						}
+					}
+				};
+				walkForInstances(componentData);
+
+				const dependencies = Array.from(compositionDeps.values());
+
+				// Scan codebase for existing components if path provided
+				let codebaseRegistry: any = undefined;
+				if (codebasePath) {
+					const existingComponents = scanCodebaseComponents(codebasePath);
+					if (existingComponents.length > 0) {
+						// Cross-reference Figma dependencies against codebase components
+						// Normalize a name to keywords for fuzzy matching
+						// "Input label" → ["input", "label"], "FormLabel" → ["form", "label"], "_Helper text" → ["helper", "text"]
+						const toKeywords = (name: string): string[] =>
+							name.replace(/^_+/, "").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_/]/g, " ").toLowerCase().split(/\s+/).filter(w => w.length > 1);
+
+						const crossRef = dependencies.map(dep => {
+							const depNameLower = dep.name.replace(/^_/, "").replace(/\s+/g, "").toLowerCase();
+							const depKeywords = toKeywords(dep.name);
+
+							const match = existingComponents.find(c => {
+								const cNameLower = c.name.toLowerCase();
+								const cKeywords = toKeywords(c.name);
+
+								// Exact name match
+								if (cNameLower === depNameLower) return true;
+								// Export name match
+								if (c.exports.some(e => e.toLowerCase() === depNameLower)) return true;
+								// Substring containment
+								if (depNameLower.includes(cNameLower) || cNameLower.includes(depNameLower)) return true;
+								// Keyword overlap — if most keywords from either name match, it's likely the same component
+								// "Input label" ∩ "FormLabel" → ["label"] overlaps, plus "input" ~ "form" (both form-related)
+								const overlap = depKeywords.filter(k => cKeywords.some(ck => ck.includes(k) || k.includes(ck)));
+								if (overlap.length > 0 && overlap.length >= Math.min(depKeywords.length, cKeywords.length) * 0.5) return true;
+								return false;
+							});
+							return {
+								figmaComponent: dep.name,
+								componentId: dep.componentId,
+								codebaseMatch: match ? { name: match.name, path: match.path, exports: match.exports } : null,
+								action: match ? "IMPORT_EXISTING" : "BUILD_NEW",
+							};
+						});
+
+						codebaseRegistry = {
+							scannedPath: codebasePath,
+							existingComponents: existingComponents.map(c => ({ name: c.name, path: c.path, exports: c.exports })),
+							componentCount: existingComponents.length,
+							crossReference: crossRef.length > 0 ? crossRef : undefined,
+							ai_instruction: `Found ${existingComponents.length} existing components in the target codebase. Components marked IMPORT_EXISTING MUST be imported — never recreate them. Components marked BUILD_NEW need to be created as standalone components (own directory, file, CSS module, stories) before building the parent.`,
+						};
+					}
+				}
+
+				// Build the full response
+				const response: any = {
+					fileKey,
+					nodeId,
+					imageUrl,
+					component: componentData,
+					annotations: annotationSummary,
+					codebaseRegistry: codebaseRegistry || undefined,
+					compositionDependencies: dependencies.length > 0 ? {
+						count: dependencies.length,
+						components: dependencies,
+						ai_instruction: codebaseRegistry
+							? `MANDATORY: Cross-reference each dependency against codebaseRegistry.crossReference above. Components marked IMPORT_EXISTING must be imported from their listed path. Components marked BUILD_NEW must be created as standalone components (own directory, file, CSS module, stories) before building the parent. Never inline sub-component logic.`
+							: "MANDATORY BEFORE WRITING ANY CODE: Scan the target codebase's component directory for existing implementations. If a matching component exists, IMPORT it — never recreate with inline markup. Each sub-component that does NOT exist must be built FIRST as standalone (own directory, file, CSS module, stories, barrel export) before building the parent.",
+					} : undefined,
+					metadata: {
+						purpose: "component_development",
+						treeDepth: 4,
+						note: [
+							imageUrl ? "Image URL provided (valid for 30 days)." : null,
+							"Component data optimized for UI implementation with design tokens (boundVariables), interaction states (reactions), sizing constraints, and text behavior.",
+							annotationSummary.count > 0 ? `${annotationSummary.count} design annotation(s) found — check annotations field for implementation specs.` : null,
+							dependencies.length > 0 ? `COMPOSITION: ${dependencies.length} sub-component(s) detected (${dependencies.map(d => d.name).join(", ")}). Build these as standalone components first, then compose.` : null,
+							"Use figma_get_annotations for full annotation details. Use figma_get_variables to resolve variable IDs to token names/values.",
+						].filter(Boolean).join(" "),
+					},
+				};
+
+				// Adaptive compression for large responses (depth 4 can produce large payloads)
+				const responseJson = JSON.stringify(response);
+				const responseSizeKB = Math.round(responseJson.length / 1024);
+
+				if (responseSizeKB > 500) {
+					// Emergency: strip children beyond depth 2 and add truncation note
+					logger.warn({ responseSizeKB, nodeId }, "Component response exceeds 500KB, truncating deep children");
+					const truncate = (n: any, currentDepth: number): any => {
+						if (!n) return n;
+						const copy = { ...n };
+						if (copy.children && currentDepth >= 2) {
+							copy.children = copy.children.map((c: any) => ({
+								id: c.id, name: c.name, type: c.type,
+								...(c.componentId ? { componentId: c.componentId } : {}),
+								...(c.variantProperties ? { variantProperties: c.variantProperties } : {}),
+								childCount: c.children?.length,
+							}));
+							copy._truncated = true;
+						} else if (copy.children) {
+							copy.children = copy.children.map((c: any) => truncate(c, currentDepth + 1));
+						}
+						return copy;
+					};
+					response.component = truncate(componentData, 0);
+					response.metadata.truncated = true;
+					response.metadata.originalSizeKB = responseSizeKB;
+					response.metadata.note += " Response was truncated due to size. Use figma_execute for deeper traversal of specific subtrees.";
+				}
+
 				return {
 					content: [
 						{
 							type: "text",
-							text: JSON.stringify(
-								{
-									fileKey,
-									nodeId,
-									imageUrl,
-									component: componentData,
-									metadata: {
-										purpose: "component_development",
-										note: imageUrl
-											? "Image URL provided above (valid for 30 days). Full component data optimized for UI implementation."
-											: "Full component data optimized for UI implementation.",
-									},
-								}
-							),
+							text: JSON.stringify(response),
 						},
 					],
 				};

@@ -11,7 +11,7 @@
 
 > **🔒 Security Reviewed Fork:** This fork (`@mp3wizard/figma-console-mcp`) has passed a full security review following OWASP Top 10 and CWE standards, including automated scanning (Semgrep, Trivy, TruffleHog) and manual vulnerability analysis. Review reports are available in the [`Security review report/`](Security%20review%20report/) folder.
 
-> **🆕 FigJam + Slides — AI Across All Figma Products:** 24 new tools bring AI to FigJam boards and Figma Slides. Create stickies, flowcharts, and tables on whiteboards. Manage entire presentations — slides, transitions, content, and reordering. [FigJam Guide →](docs/figjam.md) | [Slides Guide →](docs/slides.md)
+> **🆕 High-Fidelity Design-to-Code:** Deep component trees (depth 4), resolved design tokens, interaction state machines with CSS mappings, and codebase-aware component scanning. AI gets everything a senior engineer needs — tokens, sizing, states, annotations, and a cross-reference of what already exists in your codebase. [See what's new →](docs/figma-mcp-vs-figma-console-mcp.md)
 
 ## What is this?
 
@@ -54,9 +54,9 @@ Figma Console MCP connects AI assistants (like Claude) to Figma, enabling:
 | Real-time monitoring (console, selection) | ✅ | ❌ | ❌ |
 | Desktop Bridge plugin | ✅ | ✅ | ❌ |
 | Requires Node.js | Yes | **No** | No |
-| **Total tools available** | **84+** | **43** | **22** |
+| **Total tools available** | **89+** | **43** | **22** |
 
-> **Bottom line:** Remote SSE is **read-only** with ~38% of the tools. **Cloud Mode** unlocks write access from web AI clients without Node.js. NPX/Local Git gives the full 84+ tools with real-time monitoring.
+> **Bottom line:** Remote SSE is **read-only** with ~38% of the tools. **Cloud Mode** unlocks write access from web AI clients without Node.js. NPX/Local Git gives the full 89+ tools with real-time monitoring.
 
 ---
 
@@ -64,7 +64,7 @@ Figma Console MCP connects AI assistants (like Claude) to Figma, enabling:
 
 **Best for:** Designers who want full AI-assisted design capabilities.
 
-**What you get:** All 84+ tools including design creation, variable management, and component instantiation.
+**What you get:** All 89+ tools including design creation, variable management, and component instantiation.
 
 #### Prerequisites
 
@@ -77,7 +77,8 @@ Figma Console MCP connects AI assistants (like Claude) to Figma, enabling:
 1. Go to [Manage personal access tokens](https://help.figma.com/hc/en-us/articles/8085703771159-Manage-personal-access-tokens) in Figma Help
 2. Follow the steps to **create a new personal access token**
 3. Enter description: `Figma Console MCP`
-4. **Copy the token** — you won't see it again! (starts with `figd_`)
+4. Set scopes: **File content** (Read), **Variables** (Read), **Comments** (Read and write)
+5. **Copy the token** — you won't see it again! (starts with `figd_`)
 
 #### Step 2: Configure Your MCP Client
 
@@ -158,7 +159,7 @@ Create a simple frame with a blue background
 
 **Best for:** Developers who want to modify source code or contribute to the project.
 
-**What you get:** Same 84+ tools as NPX, plus full source code access.
+**What you get:** Same 89+ tools as NPX, plus full source code access.
 
 #### Quick Setup
 
@@ -247,7 +248,7 @@ Ready for design creation? Follow the [NPX Setup](#-npx-setup-recommended) guide
 
 **Best for:** Using Claude.ai, v0, Replit, or Lovable to create and modify Figma designs — no Node.js required.
 
-**What you get:** 76 tools including full write access — design creation, variable management, component instantiation, and all REST API tools. Only real-time monitoring (console logs, selection tracking, document changes) requires Local Mode.
+**What you get:** 79 tools including full write access — design creation, variable management, component instantiation, and all REST API tools. Only real-time monitoring (console logs, selection tracking, document changes) requires Local Mode.
 
 #### Prerequisites
 
@@ -304,7 +305,7 @@ AI Client → Cloud MCP Server → Durable Object Relay → Desktop Bridge Plugi
 | Feature | NPX (Recommended) | Cloud Mode | Local Git | Remote SSE |
 |---------|-------------------|------------|-----------|------------|
 | **Setup time** | ~10 minutes | ~5 minutes | ~15 minutes | ~2 minutes |
-| **Total tools** | **84+** | **43** | **84+** | **22** (read-only) |
+| **Total tools** | **89+** | **43** | **89+** | **22** (read-only) |
 | **Design creation** | ✅ | ✅ | ✅ | ❌ |
 | **Variable management** | ✅ | ✅ | ✅ | ❌ |
 | **Component instantiation** | ✅ | ✅ | ✅ | ❌ |
@@ -319,7 +320,7 @@ AI Client → Cloud MCP Server → Durable Object Relay → Desktop Bridge Plugi
 | **Automatic updates** | ✅ (`@latest`) | ✅ | Manual (`git pull`) | ✅ |
 | **Source code access** | ❌ | ❌ | ✅ | ❌ |
 
-> **Key insight:** Remote SSE is read-only. Cloud Mode adds write access for web AI clients without Node.js. NPX/Local Git give the full 84+ tools.
+> **Key insight:** Remote SSE is read-only. Cloud Mode adds write access for web AI clients without Node.js. NPX/Local Git give the full 89+ tools.
 
 **📖 [Complete Feature Comparison](docs/mode-comparison.md)**
 
@@ -365,7 +366,7 @@ When you first use design system tools:
 ### Local Mode - Personal Access Token (Manual)
 
 1. Visit https://help.figma.com/hc/en-us/articles/8085703771159-Manage-personal-access-tokens
-2. Generate token
+2. Generate token with scopes: **File content** (Read), **Variables** (Read), **Comments** (Read and write)
 3. Add to MCP config as `FIGMA_ACCESS_TOKEN` environment variable
 
 ---
@@ -651,7 +652,7 @@ The **Figma Desktop Bridge** plugin is the recommended way to connect Figma to t
 - The MCP server communicates via **WebSocket** through the Desktop Bridge plugin
 - The server tries port 9223 first, then automatically falls back through ports 9224–9232 if needed
 - The plugin scans all ports in the range and connects to every active server it finds
-- All 84+ tools work through the WebSocket transport
+- All 89+ tools work through the WebSocket transport
 
 **Multiple files:** The WebSocket server supports multiple simultaneous plugin connections — one per open Figma file. Each connection is tracked by file key with independent state (selection, document changes, console logs).
 
@@ -788,7 +789,7 @@ The architecture supports adding new apps with minimal boilerplate — each app 
 
 ## 🛤️ Roadmap
 
-**Current Status:** v1.17.0 (Stable) - Production-ready with FigJam + Slides support, Cloud Write Relay, Design System Kit, WebSocket-only connectivity, smart multi-file tracking, 84+ tools, Comments API, and MCP Apps
+**Current Status:** v1.17.0 (Stable) - Production-ready with FigJam + Slides support, Cloud Write Relay, Design System Kit, WebSocket-only connectivity, smart multi-file tracking, 89+ tools, Comments API, and MCP Apps
 
 **Recent Releases:**
 - [x] **v1.17.0** - Figma Slides Support: 15 new tools for managing presentations — slides, transitions, content, reordering, and navigation. Inspired by Toni Haidamous (PR #11).
