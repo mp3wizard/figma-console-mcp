@@ -1,12 +1,15 @@
 # Figma Console MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-Compatible-blue)](https://modelcontextprotocol.io/)
-[![npm](https://img.shields.io/npm/v/figma-console-mcp)](https://www.npmjs.com/package/figma-console-mcp)
+[![npm](https://img.shields.io/npm/v/@mp3wizard/figma-console-mcp)](https://www.npmjs.com/package/@mp3wizard/figma-console-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Security Reviewed](https://img.shields.io/badge/Security-Reviewed-brightgreen)](Security%20review%20report/)
 [![Documentation](https://img.shields.io/badge/docs-docs.figma--console--mcp.southleft.com-0D9488)](https://docs.figma-console-mcp.southleft.com)
 [![Sponsor](https://img.shields.io/badge/Sponsor-southleft-ea4aaa?logo=github-sponsors&logoColor=white)](https://github.com/sponsors/southleft)
 
 > **Your design system as an API.** Model Context Protocol server that bridges design and development—giving AI assistants complete access to Figma for **extraction**, **creation**, and **debugging**.
+
+> **🔒 Security Reviewed Fork:** This fork (`@mp3wizard/figma-console-mcp`) has passed a full security review following OWASP Top 10 and CWE standards, including automated scanning (Semgrep, Trivy, TruffleHog) and manual vulnerability analysis. Review reports are available in the [`Security review report/`](Security%20review%20report/) folder.
 
 > **🆕 High-Fidelity Design-to-Code:** Deep component trees (depth 4), resolved design tokens, interaction state machines with CSS mappings, and codebase-aware component scanning. AI gets everything a senior engineer needs — tokens, sizing, states, annotations, and a cross-reference of what already exists in your codebase. [See what's new →](docs/figma-mcp-vs-figma-console-mcp.md)
 
@@ -81,7 +84,7 @@ Figma Console MCP connects AI assistants (like Claude) to Figma, enabling:
 
 **Claude Code (CLI):**
 ```bash
-claude mcp add figma-console -s user -e FIGMA_ACCESS_TOKEN=figd_YOUR_TOKEN_HERE -e ENABLE_MCP_APPS=true -- npx -y figma-console-mcp@latest
+claude mcp add figma-console -s user -e FIGMA_ACCESS_TOKEN=figd_YOUR_TOKEN_HERE -e ENABLE_MCP_APPS=true -- npx -y @mp3wizard/figma-console-mcp@latest
 ```
 
 **Cursor / Windsurf / Claude Desktop:**
@@ -93,7 +96,7 @@ Add to your MCP config file (see [Where to find your config file](#-where-to-fin
   "mcpServers": {
     "figma-console": {
       "command": "npx",
-      "args": ["-y", "figma-console-mcp@latest"],
+      "args": ["-y", "@mp3wizard/figma-console-mcp@latest"],
       "env": {
         "FIGMA_ACCESS_TOKEN": "figd_YOUR_TOKEN_HERE",
         "ENABLE_MCP_APPS": "true"
@@ -130,7 +133,7 @@ If you're not sure where to put the JSON configuration above, here's where each 
 
 > One-time setup. The plugin uses a bootloader that dynamically loads fresh code from the MCP server — no need to re-import when the server updates.
 
-> **Upgrading from v1.14 or earlier?** Your existing plugin still works, but to get the bootloader benefits (no more re-importing), do one final re-import from `~/.figma-console-mcp/plugin/manifest.json`. The path is created automatically when the MCP server starts. Run `npx figma-console-mcp@latest --print-path` to see it. After this one-time upgrade, you're done forever.
+> **Upgrading from v1.14 or earlier?** Your existing plugin still works, but to get the bootloader benefits (no more re-importing), do one final re-import from `~/.figma-console-mcp/plugin/manifest.json`. The path is created automatically when the MCP server starts. Run `npx @mp3wizard/figma-console-mcp@latest --print-path` to see it. After this one-time upgrade, you're done forever.
 
 #### Step 4: Restart Your MCP Client
 
