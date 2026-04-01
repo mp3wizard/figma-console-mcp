@@ -393,10 +393,25 @@ Nodes must exist on the board (stickies, shapes, etc.). Use their node IDs from 
 		{
 			code: z.string().max(MAX_CODE_LENGTH).describe("The code content"),
 			language: z
-				.string()
+				.enum([
+					"TYPESCRIPT",
+					"JAVASCRIPT",
+					"HTML",
+					"CSS",
+					"JSON",
+					"PYTHON",
+					"RUBY",
+					"COFFEESCRIPT",
+					"SWIFT",
+					"KOTLIN",
+					"DART",
+					"BASH",
+					"SQL",
+					"PLAIN_TEXT",
+				])
 				.optional()
 				.describe(
-					"Programming language (e.g., 'JAVASCRIPT', 'PYTHON', 'TYPESCRIPT', 'JSON', 'HTML', 'CSS')",
+					"Programming language for syntax highlighting. Must be one of the supported Figma CodeLanguage values.",
 				),
 			x: z.number().optional().describe("X position on canvas"),
 			y: z.number().optional().describe("Y position on canvas"),
@@ -467,8 +482,12 @@ Nodes must exist on the board (stickies, shapes, etc.). Use their node IDs from 
 				// Compute grid columns safely on the server side — no string interpolation
 				const gridCols = columns || Math.ceil(Math.sqrt(nodeIds.length));
 
-				// Pass all parameters as a JSON object to avoid code injection.
-				// The plugin code reads from the params object, not interpolated strings.
+				// SECURITY CONTRACT: All user-controlled values (nodeIds, layout, spacing,
+				// gridCols) MUST be passed through this JSON round-trip — never interpolated
+				// directly into the code template string. JSON.stringify produces a
+				// properly-escaped JS string literal that handles all control characters,
+				// including \u2028/\u2029 line terminators that break naive string escaping.
+				// Any future addition of parameters MUST follow this same pattern.
 				const paramsJson = JSON.stringify({
 					nodeIds,
 					layout,
@@ -476,9 +495,8 @@ Nodes must exist on the board (stickies, shapes, etc.). Use their node IDs from 
 					gridCols,
 				});
 
-				// Use JSON.stringify to produce a properly-escaped double-quoted JS string literal.
-				// This handles all control characters including \u2028/\u2029 that manual
-				// single-quote escaping would miss.
+				// Double-JSON-encode: paramsJson is a string; wrapping it in JSON.stringify
+				// again embeds it as a quoted, fully-escaped JS literal inside the code template.
 				const code = `
 					const params = JSON.parse(${JSON.stringify(paramsJson)});
 					const nodes = [];

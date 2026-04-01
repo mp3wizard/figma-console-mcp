@@ -1117,8 +1117,8 @@
       var statusEl = document.getElementById('cloud-status');
       var code = (codeInput.value || '').trim().toUpperCase();
 
-      if (!code || code.length < 4) {
-        statusEl.textContent = 'Enter pairing code';
+      if (!code || code.length < 6) {
+        statusEl.textContent = 'Pairing code must be 6 characters';
         statusEl.className = 'cloud-status error';
         return;
       }
