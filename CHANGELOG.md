@@ -5,6 +5,33 @@ All notable changes to Figma Console MCP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.1] - 2026-04-01
+
+### Fixed
+- **Security: remove token metadata from production logs** — Removed `tokenPreview` (first 10 characters of access token), `tokenLength`, and `hasToken` fields from `logger.info` calls in `figma-api.ts`, `local.ts`, and `index.ts`. Development-time debugging that was never cleaned up. Reported by Samuel Klein, CISSP.
+
+
+## [1.21.0] - 2026-04-01
+
+Connection health protocol — agents no longer need custom health-check logic to detect and recover from bridge disconnections. Inspired by a connection resilience protocol shared by [Kaelig Deloumeau-Prigent](https://www.linkedin.com/in/kaelig/).
+
+### Added
+- **WebSocket heartbeat** — 30s ping/pong keepalive detects dead connections within ~60s instead of waiting for OS TCP keepalive (30-120s). Browser WebSocket auto-responds per RFC 6455 — no plugin changes needed.
+- **`failureLayer`** on `figma_get_status` — Machine-readable `1 | 2 | null` field distinguishing Layer 1 (MCP server) from Layer 2 (plugin bridge) failures. Agents can programmatically route recovery without parsing error strings.
+- **`probe` param** on `figma_get_status` — Optional active roundtrip verification (`probe: true`) sends a real command to the plugin and returns `probeResult: { success, latencyMs, error? }`. Replaces the need for canary calls.
+- **`recoverySteps[]`** on `figma_get_status` — Structured, actionable recovery instructions for each failure layer. Agents can execute or display these directly.
+- **`connectionError`** on bridge tool failures — Structured `{ layer, type, canRetry, recoverySteps }` object added to `figma_execute`, `figma_reconnect`, and bridge-dependent tool error responses. Backward compatible — existing `error`, `message`, `hint` fields unchanged.
+- **`lastPongAt`** in status response — Heartbeat diagnostic timestamp exposed in `transport.websocket` for connection health monitoring.
+- **`connectedClients`** on `/health` endpoint — Heartbeat-verified connected client count alongside raw `clients` count.
+
+### Changed
+- **`isClientConnected()`** now checks both socket `readyState` and heartbeat pong freshness (90s window), preventing phantom-connected state on silently dropped connections.
+
+### Fixed
+- **Plugin reconnect counter bug** — `wsReconnectAttempts` was a global counter shared across all ports, only reset during initial scan. Now resets on any successful reconnect, giving each disconnect the full retry budget.
+- **Plugin permanent death after retry cap** — After 5 rapid reconnect attempts, the plugin stopped trying permanently. Now starts a 30s background retry interval, automatically reconnecting when the MCP server restarts without requiring the user to reopen the plugin.
+
+
 ## [1.20.1] - 2026-03-31
 
 ### Added
@@ -561,6 +588,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Real-time Figma Desktop Bridge plugin
 - Support for both local (stdio) and Cloudflare Workers deployment
 
+[1.21.1]: https://github.com/southleft/figma-console-mcp/compare/v1.21.0...v1.21.1
+[1.21.0]: https://github.com/southleft/figma-console-mcp/compare/v1.20.1...v1.21.0
 [1.20.1]: https://github.com/southleft/figma-console-mcp/compare/v1.20.0...v1.20.1
 [1.20.0]: https://github.com/southleft/figma-console-mcp/compare/v1.19.2...v1.20.0
 [1.19.2]: https://github.com/southleft/figma-console-mcp/compare/v1.19.1...v1.19.2
