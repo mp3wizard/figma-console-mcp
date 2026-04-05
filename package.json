@@ -1,9 +1,6 @@
 {
-
 	"name": "@mp3wizard/figma-console-mcp",
-
-	"version": "1.21.2",
-
+	"version": "1.22.0",
 	"description": "MCP server for accessing Figma plugin console logs and screenshots via Cloudflare Workers or local mode",
 
 	"type": "module",
@@ -145,8 +142,9 @@
 		"@modelcontextprotocol/sdk": "^1.26.0",
 
 		"agents": "^0.7.1",
-
+		"axe-core": "^4.11.2",
 		"chrome-remote-interface": "^0.33.2",
+		"jsdom": "^29.0.1",
 
 		"pino": "^9.5.0",
 
@@ -167,6 +165,7 @@
 		"@biomejs/biome": "^2.2.5",
 
 		"@types/jest": "^29.5.14",
+		"@types/jsdom": "^28.0.1",
 
 		"@types/node": "^22.10.2",
 
