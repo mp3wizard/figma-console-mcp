@@ -3289,6 +3289,7 @@ figma.ui.onmessage = async (msg) => {
         'wcag-non-text-contrast', 'wcag-color-only', 'wcag-focus-indicator',
         'wcag-letter-spacing', 'wcag-paragraph-spacing', 'wcag-image-alt',
         'wcag-heading-hierarchy', 'wcag-reflow', 'wcag-reading-order',
+        'wcag-disabled-no-context', 'token-misuse',
         'hardcoded-color', 'no-text-style', 'default-name', 'detached-component',
         'no-autolayout', 'empty-container'
       ];
@@ -3299,9 +3300,10 @@ figma.ui.onmessage = async (msg) => {
           'wcag-contrast', 'wcag-text-size', 'wcag-target-size', 'wcag-line-height',
           'wcag-non-text-contrast', 'wcag-color-only', 'wcag-focus-indicator',
           'wcag-letter-spacing', 'wcag-paragraph-spacing', 'wcag-image-alt',
-          'wcag-heading-hierarchy', 'wcag-reflow', 'wcag-reading-order'
+          'wcag-heading-hierarchy', 'wcag-reflow', 'wcag-reading-order',
+          'wcag-disabled-no-context'
         ],
-        'design-system': ['hardcoded-color', 'no-text-style', 'default-name', 'detached-component'],
+        'design-system': ['hardcoded-color', 'no-text-style', 'default-name', 'detached-component', 'token-misuse'],
         'layout': ['no-autolayout', 'empty-container']
       };
 
@@ -3310,15 +3312,17 @@ figma.ui.onmessage = async (msg) => {
         'wcag-target-size': 'critical',
         'wcag-non-text-contrast': 'critical',
         'wcag-color-only': 'critical',
+        'wcag-focus-indicator': 'critical',
         'wcag-text-size': 'warning',
-        'wcag-line-height': 'warning',
-        'wcag-focus-indicator': 'warning',
         'wcag-letter-spacing': 'warning',
-        'wcag-paragraph-spacing': 'warning',
         'wcag-image-alt': 'warning',
         'wcag-heading-hierarchy': 'warning',
         'wcag-reflow': 'warning',
         'wcag-reading-order': 'warning',
+        'wcag-disabled-no-context': 'warning',
+        'wcag-line-height': 'info',
+        'wcag-paragraph-spacing': 'info',
+        'token-misuse': 'warning',
         'hardcoded-color': 'warning',
         'no-text-style': 'warning',
         'default-name': 'warning',
@@ -3327,20 +3331,47 @@ figma.ui.onmessage = async (msg) => {
         'empty-container': 'info'
       };
 
+      // WCAG conformance level per rule — lets teams filter by target level (AA vs AAA)
+      var wcagLevelMap = {
+        'wcag-contrast': 'aa',           // 1.4.3 Contrast (Minimum) — Level AA
+        'wcag-target-size': 'aa',        // 2.5.8 Target Size (Minimum) — Level AA
+        'wcag-non-text-contrast': 'aa',  // 1.4.11 Non-text Contrast — Level AA
+        'wcag-color-only': 'a',          // 1.4.1 Use of Color — Level A
+        'wcag-focus-indicator': 'aa',    // 2.4.7 Focus Visible — Level AA
+        'wcag-text-size': 'best-practice', // Not actually 1.4.4; 12px minimum is a readability best practice
+        'wcag-line-height': 'best-practice', // 1.4.12 is about supporting user overrides, not requiring specific values
+        'wcag-letter-spacing': 'best-practice', // Negative spacing actively harms readability
+        'wcag-paragraph-spacing': 'best-practice', // 1.4.12 is about supporting user overrides
+        'wcag-image-alt': 'a',           // 1.1.1 Non-text Content — Level A
+        'wcag-heading-hierarchy': 'a',   // 1.3.1 Info and Relationships — Level A
+        'wcag-reflow': 'aa',            // 1.4.10 Reflow — Level AA
+        'wcag-reading-order': 'a',       // 1.3.2 Meaningful Sequence — Level A
+        'wcag-disabled-no-context': 'aa', // 4.1.2 Name, Role, Value — disabled elements need ARIA context
+        'token-misuse': 'design-system',
+        'hardcoded-color': 'design-system',
+        'no-text-style': 'design-system',
+        'default-name': 'design-system',
+        'detached-component': 'design-system',
+        'no-autolayout': 'design-system',
+        'empty-container': 'design-system'
+      };
+
       var ruleDescriptions = {
-        'wcag-contrast': 'Text does not meet WCAG AA contrast ratio (4.5:1 normal, 3:1 large)',
-        'wcag-text-size': 'Text size is below 12px minimum',
-        'wcag-target-size': 'Interactive element is smaller than 24x24px minimum target size',
-        'wcag-line-height': 'Line height is less than 1.5x the font size',
-        'wcag-non-text-contrast': 'UI component or graphical object does not meet 3:1 contrast ratio against adjacent color (WCAG 1.4.11)',
-        'wcag-color-only': 'Component variants appear to differ only by color without additional visual indicator (WCAG 1.4.1)',
-        'wcag-focus-indicator': 'Interactive component is missing a focus/focused variant or focus indicator is insufficient (WCAG 2.4.7)',
-        'wcag-letter-spacing': 'Negative letter spacing harms readability (WCAG 1.4.12)',
-        'wcag-paragraph-spacing': 'Paragraph spacing is less than 2x the font size (WCAG 1.4.12)',
-        'wcag-image-alt': 'Image or image fill has no description annotation for alternative text (WCAG 1.1.1)',
-        'wcag-heading-hierarchy': 'Heading levels skip a level (e.g., H1 followed by H3) breaking document structure (WCAG 1.3.1)',
-        'wcag-reflow': 'Frame uses fixed positioning without auto-layout, may not reflow for different viewport sizes (WCAG 1.4.10)',
-        'wcag-reading-order': 'Visual position of elements does not match layer order, which may confuse screen readers (WCAG 1.3.2)',
+        'wcag-contrast': 'Text does not meet WCAG AA contrast ratio (4.5:1 normal, 3:1 large text ≥24px or ≥18.5px bold). Best practice: always target 4.5:1, especially in dark mode.',
+        'wcag-text-size': 'Text size is below 12px — readability best practice. Note: WCAG 1.4.4 requires supporting 200% text-only zoom (use rem/em units), not a specific minimum size.',
+        'wcag-target-size': 'Interactive element is smaller than 24x24px minimum target size (WCAG 2.5.8)',
+        'wcag-line-height': 'Line height is below 1.5x font size — best practice for readability. Note: WCAG 1.4.12 requires that content does not break when users override spacing to 1.5x, not that designs must use 1.5x by default.',
+        'wcag-non-text-contrast': 'UI component or graphical object does not meet 3:1 contrast ratio against adjacent color. Also applies to borders and chart elements against adjacent elements (WCAG 1.4.11)',
+        'wcag-color-only': 'Information is conveyed only through color change (e.g., error state uses red border without an error message or icon). Color can supplement but must not be the sole indicator (WCAG 1.4.1)',
+        'wcag-focus-indicator': 'Interactive component is missing a focus/focused variant or the focus indicator is insufficient. A visible focus state is critical — without it, keyboard users cannot navigate the interface (WCAG 2.4.7)',
+        'wcag-letter-spacing': 'Negative letter spacing actively harms readability. WCAG 1.4.12 requires content to support user-overridden spacing without breaking.',
+        'wcag-paragraph-spacing': 'Paragraph spacing is below 2x font size — best practice. WCAG 1.4.12 requires content to support user-overridden spacing to 2x without loss of content, not that designs must use 2x by default.',
+        'wcag-image-alt': 'Image or image fill has no description annotation for alternative text. All images need alt text; decorative images should be explicitly marked as decorative. Graphs and charts also need long descriptions (e.g., a data table) (WCAG 1.1.1)',
+        'wcag-heading-hierarchy': 'Heading levels skip a level (e.g., H1 followed by H3). Use H1 through H6 sequentially without skipping levels (WCAG 1.3.1)',
+        'wcag-reflow': 'Frame uses fixed positioning without auto-layout. Content must support 400% zoom on 1280px viewport (equivalent to 320px minimum width) without horizontal scrolling or loss of content (WCAG 1.4.10)',
+        'wcag-reading-order': 'Visual position of elements does not match layer order. Keyboard navigation and screen reader order must follow a logical sequence (WCAG 1.3.2)',
+        'wcag-disabled-no-context': 'Disabled variant has no tooltip, helper text, or annotation explaining why the element is disabled. Use aria-disabled (not HTML disabled) to keep the element focusable for screen readers, and add a tooltip so all users understand the disabled reason.',
+        'token-misuse': 'Variable name prefix does not match its usage context (e.g., a bg/* token used as a text fill, or a text/* token used as a background). This may cause contrast issues and indicates a misbound token.',
         'hardcoded-color': 'Fill color is not bound to a variable or style',
         'no-text-style': 'Text node is not using a text style',
         'default-name': 'Node has a default Figma name (e.g., "Frame 1")',
@@ -3995,7 +4026,130 @@ figma.ui.onmessage = async (msg) => {
           } catch (e) { /* slot sublayer */ }
         }
 
+        // wcag-disabled-no-context: Disabled variant without tooltip/helper text (Isabella's pattern)
+        if (activeRuleSet['wcag-disabled-no-context'] && nodeType === 'COMPONENT_SET' && !truncated) {
+          try {
+            var csChildren = node.children;
+            if (csChildren) {
+              for (var dci = 0; dci < csChildren.length && !truncated; dci++) {
+                var dcVariant = csChildren[dci];
+                try {
+                  var dcName = dcVariant.name || '';
+                  if (/(disabled|inactive)/i.test(dcName)) {
+                    // Check if disabled variant has tooltip, helper text, or descriptive child
+                    var hasContextChild = false;
+                    try {
+                      if (dcVariant.children) {
+                        for (var dcci = 0; dcci < dcVariant.children.length; dcci++) {
+                          var dcChild = dcVariant.children[dcci];
+                          try {
+                            var dcChildName = (dcChild.name || '').toLowerCase();
+                            // Look for tooltip, helper text, hint, description, or error message children
+                            if (/tooltip|helper|hint|description|message|caption|note|info|why|reason/i.test(dcChildName)) {
+                              hasContextChild = true;
+                              break;
+                            }
+                            // Recurse one level for nested tooltip/helper
+                            if (dcChild.children) {
+                              for (var dcgci = 0; dcgci < dcChild.children.length; dcgci++) {
+                                var dcGrandchild = dcChild.children[dcgci];
+                                try {
+                                  if (/tooltip|helper|hint|description|message/i.test(dcGrandchild.name || '')) {
+                                    hasContextChild = true;
+                                    break;
+                                  }
+                                } catch (e) { /* skip */ }
+                              }
+                              if (hasContextChild) break;
+                            }
+                          } catch (e) { /* skip */ }
+                        }
+                      }
+                    } catch (e) { /* skip */ }
+                    // Also check component description for disabled guidance
+                    var hasDisabledAnnotation = false;
+                    try {
+                      var csDesc = (node.description || '').toLowerCase();
+                      if (/disabled.*tooltip|disabled.*helper|disabled.*hint|aria-disabled|why.*disabled|disabled.*reason/i.test(csDesc)) {
+                        hasDisabledAnnotation = true;
+                      }
+                    } catch (e) { /* skip */ }
+                    if (!hasContextChild && !hasDisabledAnnotation) {
+                      if (totalFindings < maxFindings) {
+                        findings['wcag-disabled-no-context'].push({
+                          id: dcVariant.id,
+                          name: nodeName + ' / ' + dcVariant.name,
+                          suggestion: 'Disabled elements should remain focusable (use aria-disabled, not HTML disabled). Add a tooltip or helper text explaining why the element is disabled so screen reader users understand the context.'
+                        });
+                        totalFindings++;
+                      } else { truncated = true; }
+                    }
+                  }
+                } catch (e) { /* skip variant */ }
+              }
+            }
+          } catch (e) { /* slot sublayer */ }
+        }
+
         // ---- Design System checks ----
+
+        // token-misuse: Variable name prefix doesn't match usage context
+        if (activeRuleSet['token-misuse'] && !isPage && !isSection && !truncated) {
+          try {
+            var tmFills = node.fills;
+            if (tmFills && tmFills.length > 0) {
+              for (var tmi = 0; tmi < tmFills.length; tmi++) {
+                var tmFill = tmFills[tmi];
+                if (tmFill.type === 'SOLID' && tmFill.visible !== false) {
+                  try {
+                    if (tmFill.boundVariables && tmFill.boundVariables.color) {
+                      var tmVarId = tmFill.boundVariables.color.id;
+                      // Resolve variable name
+                      try {
+                        var tmVar = figma.variables.getVariableById(tmVarId);
+                        if (tmVar) {
+                          var tmVarName = tmVar.name.toLowerCase();
+                          var isBgToken = /^(bg|background|surface|fill)[\/-]/.test(tmVarName);
+                          var isTextNode = nodeType === 'TEXT';
+                          // Flag: bg/surface token used as text fill
+                          if (isTextNode && isBgToken) {
+                            if (totalFindings < maxFindings) {
+                              findings['token-misuse'].push({
+                                id: nodeId,
+                                name: nodeName,
+                                variable: tmVar.name,
+                                usage: 'text fill',
+                                expectedPrefix: 'text/*, fg/*, foreground/*',
+                                suggestion: 'This text node uses a background/surface token ("' + tmVar.name + '") as its fill color. This is likely a misbound token — use a text/foreground token instead.'
+                              });
+                              totalFindings++;
+                            } else { truncated = true; }
+                          }
+                          // Flag: text/foreground token used as frame/shape background
+                          var isTextToken = /^(text|fg|foreground|font)[\/-]/.test(tmVarName);
+                          var isContainerNode = nodeType === 'FRAME' || nodeType === 'COMPONENT' || nodeType === 'INSTANCE' || nodeType === 'RECTANGLE';
+                          if (isContainerNode && isTextToken && !truncated) {
+                            if (totalFindings < maxFindings) {
+                              findings['token-misuse'].push({
+                                id: nodeId,
+                                name: nodeName,
+                                variable: tmVar.name,
+                                usage: 'background fill',
+                                expectedPrefix: 'bg/*, background/*, surface/*',
+                                suggestion: 'This container uses a text/foreground token ("' + tmVar.name + '") as its background fill. This is likely a misbound token — use a background/surface token instead.'
+                              });
+                              totalFindings++;
+                            } else { truncated = true; }
+                          }
+                        }
+                      } catch (e) { /* can't resolve variable */ }
+                    }
+                  } catch (e) { /* no bound vars */ }
+                }
+              }
+            }
+          } catch (e) { /* slot sublayer */ }
+        }
 
         // hardcoded-color: Solid fills without variable binding or style
         if (activeRuleSet['hardcoded-color'] && !isPage && !isSection && !truncated) {
@@ -4190,6 +4344,7 @@ figma.ui.onmessage = async (msg) => {
         categories.push({
           rule: ruleId,
           severity: sev,
+          wcagLevel: wcagLevelMap[ruleId] || null,
           count: findings[ruleId].length,
           description: ruleDescriptions[ruleId],
           nodes: findings[ruleId]

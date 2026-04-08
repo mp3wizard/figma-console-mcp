@@ -73,6 +73,8 @@ describe('figma_lint_design', () => {
 			'wcag-non-text-contrast', 'wcag-color-only', 'wcag-focus-indicator',
 			'wcag-letter-spacing', 'wcag-paragraph-spacing', 'wcag-image-alt',
 			'wcag-heading-hierarchy', 'wcag-reflow', 'wcag-reading-order',
+			'wcag-disabled-no-context',
+			'token-misuse',
 			'hardcoded-color', 'no-text-style', 'default-name', 'detached-component',
 			'no-autolayout', 'empty-container',
 		];
@@ -82,20 +84,21 @@ describe('figma_lint_design', () => {
 			'wcag-non-text-contrast', 'wcag-color-only', 'wcag-focus-indicator',
 			'wcag-letter-spacing', 'wcag-paragraph-spacing', 'wcag-image-alt',
 			'wcag-heading-hierarchy', 'wcag-reflow', 'wcag-reading-order',
+			'wcag-disabled-no-context',
 		];
-		const DESIGN_SYSTEM_RULES = ['hardcoded-color', 'no-text-style', 'default-name', 'detached-component'];
+		const DESIGN_SYSTEM_RULES = ['hardcoded-color', 'no-text-style', 'default-name', 'detached-component', 'token-misuse'];
 		const LAYOUT_RULES = ['no-autolayout', 'empty-container'];
 
-		it('should have 19 rules total', () => {
-			expect(ALL_RULES).toHaveLength(19);
+		it('should have 21 rules total', () => {
+			expect(ALL_RULES).toHaveLength(21);
 		});
 
-		it('should have 13 WCAG rules', () => {
-			expect(WCAG_RULES).toHaveLength(13);
+		it('should have 14 WCAG rules', () => {
+			expect(WCAG_RULES).toHaveLength(14);
 		});
 
-		it('should have 4 design system rules', () => {
-			expect(DESIGN_SYSTEM_RULES).toHaveLength(4);
+		it('should have 5 design system rules', () => {
+			expect(DESIGN_SYSTEM_RULES).toHaveLength(5);
 		});
 
 		it('should have 2 layout rules', () => {
@@ -129,15 +132,17 @@ describe('figma_lint_design', () => {
 			'wcag-target-size': 'critical',
 			'wcag-non-text-contrast': 'critical',
 			'wcag-color-only': 'critical',
+			'wcag-focus-indicator': 'critical',
 			'wcag-text-size': 'warning',
-			'wcag-line-height': 'warning',
-			'wcag-focus-indicator': 'warning',
 			'wcag-letter-spacing': 'warning',
-			'wcag-paragraph-spacing': 'warning',
 			'wcag-image-alt': 'warning',
 			'wcag-heading-hierarchy': 'warning',
 			'wcag-reflow': 'warning',
 			'wcag-reading-order': 'warning',
+			'wcag-disabled-no-context': 'warning',
+			'wcag-line-height': 'info',
+			'wcag-paragraph-spacing': 'info',
+			'token-misuse': 'warning',
 			'hardcoded-color': 'warning',
 			'no-text-style': 'warning',
 			'default-name': 'warning',
@@ -146,24 +151,25 @@ describe('figma_lint_design', () => {
 			'empty-container': 'info',
 		};
 
-		it('should have 4 critical rules', () => {
+		it('should have 5 critical rules', () => {
 			const critical = Object.entries(SEVERITY_MAP).filter(([, s]) => s === 'critical');
-			expect(critical).toHaveLength(4);
+			expect(critical).toHaveLength(5);
 		});
 
-		it('should have 14 warning rules', () => {
+		it('should have 13 warning rules', () => {
 			const warnings = Object.entries(SEVERITY_MAP).filter(([, s]) => s === 'warning');
-			expect(warnings).toHaveLength(14);
+			expect(warnings).toHaveLength(13);
 		});
 
-		it('should have 1 info rule', () => {
+		it('should have 3 info rules', () => {
 			const info = Object.entries(SEVERITY_MAP).filter(([, s]) => s === 'info');
-			expect(info).toHaveLength(1);
+			expect(info).toHaveLength(3);
 		});
 
-		it('should map contrast and target size as critical', () => {
+		it('should map contrast, target size, and focus indicator as critical', () => {
 			expect(SEVERITY_MAP['wcag-contrast']).toBe('critical');
 			expect(SEVERITY_MAP['wcag-target-size']).toBe('critical');
+			expect(SEVERITY_MAP['wcag-focus-indicator']).toBe('critical');
 		});
 
 		it('should map non-text contrast and color-only as critical', () => {
@@ -171,14 +177,69 @@ describe('figma_lint_design', () => {
 			expect(SEVERITY_MAP['wcag-color-only']).toBe('critical');
 		});
 
-		it('should map new Phase 1 rules to correct severities', () => {
-			expect(SEVERITY_MAP['wcag-focus-indicator']).toBe('warning');
+		it('should map line-height and paragraph-spacing as info (best practice, not strict WCAG requirement)', () => {
+			// WCAG 1.4.12 requires supporting user overrides, not specific default values
+			expect(SEVERITY_MAP['wcag-line-height']).toBe('info');
+			expect(SEVERITY_MAP['wcag-paragraph-spacing']).toBe('info');
+		});
+
+		it('should map remaining WCAG rules to correct severities', () => {
 			expect(SEVERITY_MAP['wcag-letter-spacing']).toBe('warning');
-			expect(SEVERITY_MAP['wcag-paragraph-spacing']).toBe('warning');
 			expect(SEVERITY_MAP['wcag-image-alt']).toBe('warning');
 			expect(SEVERITY_MAP['wcag-heading-hierarchy']).toBe('warning');
 			expect(SEVERITY_MAP['wcag-reflow']).toBe('warning');
 			expect(SEVERITY_MAP['wcag-reading-order']).toBe('warning');
+		});
+	});
+
+	// ========================================================================
+	// WCAG conformance level tagging
+	// ========================================================================
+
+	describe('WCAG level tagging', () => {
+		const WCAG_LEVEL_MAP: Record<string, string> = {
+			'wcag-contrast': 'aa',
+			'wcag-target-size': 'aa',
+			'wcag-non-text-contrast': 'aa',
+			'wcag-color-only': 'a',
+			'wcag-focus-indicator': 'aa',
+			'wcag-text-size': 'best-practice',
+			'wcag-line-height': 'best-practice',
+			'wcag-letter-spacing': 'best-practice',
+			'wcag-paragraph-spacing': 'best-practice',
+			'wcag-image-alt': 'a',
+			'wcag-heading-hierarchy': 'a',
+			'wcag-reflow': 'aa',
+			'wcag-reading-order': 'a',
+			'wcag-disabled-no-context': 'aa',
+		};
+
+		it('should tag all 14 WCAG rules with conformance levels', () => {
+			expect(Object.keys(WCAG_LEVEL_MAP)).toHaveLength(14);
+		});
+
+		it('should have Level A rules', () => {
+			const levelA = Object.entries(WCAG_LEVEL_MAP).filter(([, l]) => l === 'a');
+			expect(levelA.length).toBeGreaterThanOrEqual(3);
+		});
+
+		it('should have Level AA rules', () => {
+			const levelAA = Object.entries(WCAG_LEVEL_MAP).filter(([, l]) => l === 'aa');
+			expect(levelAA.length).toBeGreaterThanOrEqual(4);
+		});
+
+		it('should have best-practice rules (not strict WCAG requirements)', () => {
+			const bestPractice = Object.entries(WCAG_LEVEL_MAP).filter(([, l]) => l === 'best-practice');
+			expect(bestPractice.length).toBeGreaterThanOrEqual(3);
+			// These rules check useful patterns but are not strict WCAG conformance requirements
+			expect(WCAG_LEVEL_MAP['wcag-text-size']).toBe('best-practice');
+			expect(WCAG_LEVEL_MAP['wcag-line-height']).toBe('best-practice');
+			expect(WCAG_LEVEL_MAP['wcag-paragraph-spacing']).toBe('best-practice');
+		});
+
+		it('should correctly classify focus-indicator as AA (not AAA)', () => {
+			// WCAG 2.4.7 Focus Visible is Level AA — critical for keyboard users
+			expect(WCAG_LEVEL_MAP['wcag-focus-indicator']).toBe('aa');
 		});
 	});
 
@@ -1044,30 +1105,176 @@ describe('figma_lint_design', () => {
 			'wcag-contrast': 'WCAG 1.4.3 / 1.4.6',
 			'wcag-non-text-contrast': 'WCAG 1.4.11',
 			'wcag-color-only': 'WCAG 1.4.1',
-			'wcag-text-size': 'WCAG 1.4.4',
+			'wcag-text-size': 'Best practice (not 1.4.4 — that criterion is about zoom support)',
 			'wcag-target-size': 'WCAG 2.5.5 / 2.5.8',
-			'wcag-line-height': 'WCAG 1.4.12',
-			'wcag-letter-spacing': 'WCAG 1.4.12',
-			'wcag-paragraph-spacing': 'WCAG 1.4.12',
+			'wcag-line-height': 'Best practice (1.4.12 requires supporting user overrides, not specific defaults)',
+			'wcag-letter-spacing': 'Best practice (negative spacing harms readability)',
+			'wcag-paragraph-spacing': 'Best practice (1.4.12 requires supporting user overrides)',
 			'wcag-focus-indicator': 'WCAG 2.4.7 / 2.4.11',
 			'wcag-image-alt': 'WCAG 1.1.1',
 			'wcag-heading-hierarchy': 'WCAG 1.3.1',
 			'wcag-reflow': 'WCAG 1.4.10',
 			'wcag-reading-order': 'WCAG 1.3.2',
+			'wcag-disabled-no-context': 'WCAG 4.1.2 (disabled elements need ARIA context for screen readers)',
 		};
 
-		it('should map all 13 WCAG rules to success criteria', () => {
-			expect(Object.keys(WCAG_CRITERIA_MAP)).toHaveLength(13);
+		it('should map all 14 WCAG rules to success criteria', () => {
+			expect(Object.keys(WCAG_CRITERIA_MAP)).toHaveLength(14);
 		});
 
 		it('should cover Perceivable principle (1.x.x)', () => {
 			const perceivable = Object.values(WCAG_CRITERIA_MAP).filter(v => v.startsWith('WCAG 1.'));
-			expect(perceivable.length).toBeGreaterThanOrEqual(9);
+			// 6 strict WCAG perceivable rules (contrast, non-text, color-only, image-alt, reflow, plus heading/reading)
+			// 3 rules reclassified as best-practice (text-size, line-height, paragraph-spacing)
+			expect(perceivable.length).toBeGreaterThanOrEqual(5);
 		});
 
 		it('should cover Operable principle (2.x.x)', () => {
 			const operable = Object.values(WCAG_CRITERIA_MAP).filter(v => v.startsWith('WCAG 2.'));
 			expect(operable.length).toBeGreaterThanOrEqual(2);
+		});
+	});
+
+	// ========================================================================
+	// Phase B: Disabled variant structural check
+	// ========================================================================
+
+	describe('wcag-disabled-no-context', () => {
+		it('should flag disabled variants without tooltip or helper text', () => {
+			const disabledVariant = {
+				name: 'state=disabled',
+				children: [
+					{ name: 'Label', type: 'TEXT' },
+					{ name: 'Icon', type: 'INSTANCE' },
+				],
+			};
+			const hasContextChild = disabledVariant.children.some(
+				(c: any) => /tooltip|helper|hint|description|message/i.test(c.name),
+			);
+			expect(hasContextChild).toBe(false);
+		});
+
+		it('should NOT flag disabled variants with tooltip child', () => {
+			const disabledVariant = {
+				name: 'state=disabled',
+				children: [
+					{ name: 'Label', type: 'TEXT' },
+					{ name: 'Tooltip', type: 'INSTANCE' },
+				],
+			};
+			const hasContextChild = disabledVariant.children.some(
+				(c: any) => /tooltip|helper|hint|description|message/i.test(c.name),
+			);
+			expect(hasContextChild).toBe(true);
+		});
+
+		it('should NOT flag disabled variants with helper text', () => {
+			const disabledVariant = {
+				name: 'state=disabled',
+				children: [
+					{ name: 'Input', type: 'INSTANCE' },
+					{ name: 'Helper text', type: 'TEXT' },
+				],
+			};
+			const hasContextChild = disabledVariant.children.some(
+				(c: any) => /tooltip|helper|hint|description|message/i.test(c.name),
+			);
+			expect(hasContextChild).toBe(true);
+		});
+
+		it('should NOT flag when component description mentions disabled tooltip', () => {
+			const description = 'When disabled, show a tooltip explaining why the action is unavailable.';
+			const hasAnnotation = /disabled.*tooltip|disabled.*helper|aria-disabled/i.test(description);
+			expect(hasAnnotation).toBe(true);
+		});
+
+		it('should detect disabled and inactive variant names', () => {
+			const disabledPattern = /(disabled|inactive)/i;
+			expect('state=disabled').toMatch(disabledPattern);
+			expect('State=Inactive').toMatch(disabledPattern);
+			expect('state=hover').not.toMatch(disabledPattern);
+		});
+
+		it('should produce finding with Isabella pattern suggestion', () => {
+			const finding = {
+				id: '1:2',
+				name: 'Button / state=disabled',
+				suggestion: 'Disabled elements should remain focusable (use aria-disabled, not HTML disabled). Add a tooltip or helper text explaining why the element is disabled so screen reader users understand the context.',
+			};
+			expect(finding.suggestion).toContain('aria-disabled');
+			expect(finding.suggestion).toContain('tooltip');
+			expect(finding.suggestion).toContain('screen reader');
+		});
+	});
+
+	// ========================================================================
+	// Phase B: Token misuse detection
+	// ========================================================================
+
+	describe('token-misuse', () => {
+		it('should flag bg/* token used as text fill', () => {
+			const variable = { name: 'bg/accent/weakest-hover' };
+			const nodeType = 'TEXT';
+			const isBgToken = /^(bg|background|surface|fill)[\/-]/.test(variable.name.toLowerCase());
+			const isTextNode = nodeType === 'TEXT';
+			expect(isBgToken && isTextNode).toBe(true);
+		});
+
+		it('should flag text/* token used as frame background', () => {
+			const variable = { name: 'text/primary' };
+			const nodeType = 'FRAME';
+			const isTextToken = /^(text|fg|foreground|font)[\/-]/.test(variable.name.toLowerCase());
+			const isContainerNode = ['FRAME', 'COMPONENT', 'INSTANCE', 'RECTANGLE'].includes(nodeType);
+			expect(isTextToken && isContainerNode).toBe(true);
+		});
+
+		it('should NOT flag text/* token on TEXT node', () => {
+			const variable = { name: 'text/primary' };
+			const nodeType = 'TEXT';
+			const isTextToken = /^(text|fg|foreground|font)[\/-]/.test(variable.name.toLowerCase());
+			const isContainerNode = ['FRAME', 'COMPONENT', 'INSTANCE', 'RECTANGLE'].includes(nodeType);
+			expect(isTextToken && isContainerNode).toBe(false);
+		});
+
+		it('should NOT flag bg/* token on FRAME node', () => {
+			const variable = { name: 'bg/surface/default' };
+			const nodeType = 'FRAME';
+			const isBgToken = /^(bg|background|surface|fill)[\/-]/.test(variable.name.toLowerCase());
+			const isTextNode = nodeType === 'TEXT';
+			expect(isBgToken && isTextNode).toBe(false);
+		});
+
+		it('should detect various bg token prefixes', () => {
+			const bgPattern = /^(bg|background|surface|fill)[\/-]/;
+			expect(bgPattern.test('bg/primary')).toBe(true);
+			expect(bgPattern.test('background/default')).toBe(true);
+			expect(bgPattern.test('surface/elevated')).toBe(true);
+			expect(bgPattern.test('fill/accent')).toBe(true);
+			expect(bgPattern.test('text/primary')).toBe(false);
+			expect(bgPattern.test('border/default')).toBe(false);
+		});
+
+		it('should detect various text token prefixes', () => {
+			const textPattern = /^(text|fg|foreground|font)[\/-]/;
+			expect(textPattern.test('text/primary')).toBe(true);
+			expect(textPattern.test('fg/secondary')).toBe(true);
+			expect(textPattern.test('foreground/muted')).toBe(true);
+			expect(textPattern.test('font/accent')).toBe(true);
+			expect(textPattern.test('bg/primary')).toBe(false);
+		});
+
+		it('should produce actionable finding', () => {
+			const finding = {
+				id: '1:2',
+				name: 'Label',
+				variable: 'bg/accent/weakest-hover',
+				usage: 'text fill',
+				expectedPrefix: 'text/*, fg/*, foreground/*',
+				suggestion: 'This text node uses a background/surface token as its fill color.',
+			};
+			expect(finding.variable).toContain('bg/');
+			expect(finding.usage).toBe('text fill');
+			expect(finding.expectedPrefix).toContain('text/*');
 		});
 	});
 });
