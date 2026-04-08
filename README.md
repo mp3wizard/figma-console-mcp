@@ -792,9 +792,11 @@ The architecture supports adding new apps with minimal boilerplate — each app 
 
 ## 🛤️ Roadmap
 
-**Current Status:** v1.17.0 (Stable) - Production-ready with FigJam + Slides support, Cloud Write Relay, Design System Kit, WebSocket-only connectivity, smart multi-file tracking, 94+ tools, Comments API, and MCP Apps
+**Current Status:** v1.22.4 (Stable) - Production-ready with 14 WCAG accessibility rules, Phase B lint checks (disabled variant context + token misuse detection), FigJam + Slides support, Cloud Write Relay, Design System Kit, WebSocket-only connectivity, smart multi-file tracking, 94+ tools, Comments API, and MCP Apps
 
 **Recent Releases:**
+- [x] **v1.22.4** - Security: fix 6 Medium hono/node-server CVEs via package.json overrides (CVE-2026-39406 through CVE-2026-39410, GHSA-26pp-8wgv-hjvm, GHSA-xpcf-pg52-r92g)
+- [x] **v1.22.3** - Phase B accessibility: disabled variant context check, token misuse detection, WCAG interpretation fixes from accessibility consultant review, rule count 13 to 14
 - [x] **v1.17.0** - Figma Slides Support: 15 new tools for managing presentations — slides, transitions, content, reordering, and navigation. Inspired by Toni Haidamous (PR #11).
 - [x] **v1.16.0** - FigJam Support: 9 new tools for creating and reading FigJam boards — stickies, flowcharts, tables, code blocks, and connection graphs. Community-contributed by klgral and lukemoderwell.
 - [x] **v1.12.0** - Cloud Write Relay: web AI clients (Claude.ai, v0, Replit, Lovable) can create and modify Figma designs via cloud relay pairing — no Node.js required
@@ -836,6 +838,24 @@ npm run build
 ```
 
 **📖 [Development Guide](docs/ARCHITECTURE.md)**
+
+---
+
+## 🔒 Network Transparency
+
+All outbound network connections made by this MCP server:
+
+| Destination | Protocol | Purpose | Data Sent |
+|-------------|----------|---------|-----------|
+| `api.figma.com` | HTTPS | REST API (files, variables, components, styles, images, comments) | File keys, node IDs, API parameters |
+| `www.figma.com` | HTTPS | OAuth 2.0 authorization flow | Client ID, auth codes, refresh tokens |
+| `figma-console-mcp.southleft.com` | WSS/HTTPS | Cloud relay for web AI clients (Cloud Mode only) | Metadata only: fileName, fileKey, currentPage |
+| Figma S3 CDN | HTTPS | Rendered image downloads (temporary URLs) | None (download only) |
+| `localhost:9223-9232` | WS | Desktop Bridge plugin (local only) | Plugin commands/responses |
+
+**Not present:** telemetry, analytics, tracking, third-party data services, obfuscated code, or environment variable leakage. Full audit available in [`Security review report/`](Security%20review%20report/).
+
+> **Local Mode users:** `src/local.ts` does not connect to the cloud relay — only Figma API and localhost WebSocket.
 
 ---
 
