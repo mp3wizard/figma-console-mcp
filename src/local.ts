@@ -34,6 +34,7 @@ import {
 import { registerFigmaAPITools } from "./core/figma-tools.js";
 import { registerDesignCodeTools } from "./core/design-code-tools.js";
 import { registerCommentTools } from "./core/comment-tools.js";
+import { registerVersionTools } from "./core/version-tools.js";
 import { registerAnnotationTools } from "./core/annotation-tools.js";
 import { registerDeepComponentTools } from "./core/deep-component-tools.js";
 import { registerDesignSystemTools } from "./core/design-system-tools.js";
@@ -5978,6 +5979,19 @@ return {
 			this.server,
 			() => this.getFigmaAPI(),
 			() => this.getCurrentFileUrl(),
+		);
+
+		// Register Version History tools
+		registerVersionTools(
+			this.server,
+			() => this.getFigmaAPI(),
+			() => this.getCurrentFileUrl(),
+			undefined, // options
+			() => {
+				// Selection fallback for blame/diff/changelog tools
+				const sel = this.wsServer?.getCurrentSelection();
+				return sel?.nodes?.map((n) => n.id) ?? null;
+			},
 		);
 
 		// Register Design System Kit tool

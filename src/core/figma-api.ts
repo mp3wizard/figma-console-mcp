@@ -396,6 +396,42 @@ export class FigmaAPI {
   }
 
   /**
+   * GET /v1/files/:file_key/versions
+   * List a file's version history. Cursor-style pagination via before/after
+   * (cursors are version IDs). Response includes pagination.prev_page and
+   * pagination.next_page as full URLs — Figma recommends following those
+   * directly rather than reconstructing cursors. Requires the
+   * `file_versions:read` OAuth scope (or PAT "Versions" Read permission).
+   */
+  async getFileVersions(
+    fileKey: string,
+    options?: {
+      page_size?: number;  // 1–50, default 30
+      before?: string;     // version id cursor — returns earlier versions
+      after?: string;      // version id cursor — returns later versions
+    },
+  ): Promise<{
+    versions: Array<{
+      id: string;
+      created_at: string;
+      label: string;
+      description: string;
+      user: { id: string; handle: string; img_url: string };
+    }>;
+    pagination?: {
+      prev_page?: string;
+      next_page?: string;
+    };
+  }> {
+    const params = new URLSearchParams();
+    if (options?.page_size !== undefined) params.set('page_size', String(options.page_size));
+    if (options?.before) params.set('before', options.before);
+    if (options?.after) params.set('after', options.after);
+    const query = params.toString() ? `?${params.toString()}` : '';
+    return this.request(`/files/${fileKey}/versions${query}`);
+  }
+
+  /**
    * Helper: Get all design tokens (variables) with formatted output
    * Both local and published can fail gracefully (e.g., 403 without Enterprise plan)
    */

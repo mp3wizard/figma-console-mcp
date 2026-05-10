@@ -7,7 +7,7 @@ description: "Complete API reference for all 90+ MCP tools, including parameters
 
 This guide provides detailed documentation for each tool, including when to use them and best practices.
 
-> **Note:** Local Mode (NPX/Git) provides **94+ tools** with full read/write capabilities and real-time monitoring. Remote Mode provides **9 read-only tools** by default, or **61 tools** (including full write access) when paired with the Desktop Bridge plugin via Cloud Relay. Tools marked "Local" in the table below require Local Mode. Tools marked "Local / Cloud" work in both Local Mode and Cloud Mode (after pairing).
+> **Note:** Local Mode (NPX/Git) provides **100+ tools** with full read/write capabilities and real-time monitoring. Remote Mode provides **9 read-only tools** by default, or **61 tools** (including full write access) when paired with the Desktop Bridge plugin via Cloud Relay. Tools marked "Local" in the table below require Local Mode. Tools marked "Local / Cloud" work in both Local Mode and Cloud Mode (after pairing).
 
 ## Quick Reference
 
@@ -84,6 +84,12 @@ This guide provides detailed documentation for each tool, including when to use 
 | | `figjam_auto_arrange` | Arrange nodes in grid/row/column layout | Local / Cloud |
 | | `figjam_get_board_contents` | Read all content from a FigJam board | Local / Cloud |
 | | `figjam_get_connections` | Read the connection graph | Local / Cloud |
+| **🕒 Version History** | `figma_get_file_versions` | List version history with author/label/timestamp metadata | All |
+| | `figma_get_file_at_version` | Snapshot a file (or specific nodes) at a past version | All |
+| | `figma_diff_versions` | Structured diff between two versions: page changes, component property/binding deltas | All |
+| | `figma_get_changes_since_version` | Convenience wrapper: diff against current HEAD | All |
+| | `figma_generate_changelog` | Markdown changelog with author enrichment, ready for release notes | All |
+| | `figma_blame_node` | Binary-search blame walker: find when (and by whom) a property/variant was introduced | All |
 | **☁️ Cloud Relay** | `figma_pair_plugin` | Generate pairing code for Desktop Bridge | Cloud |
 
 ---
@@ -2502,6 +2508,109 @@ Generate a pairing code to connect the Figma Desktop Bridge plugin to the cloud 
 4. All subsequent write tool calls route through the relay to the plugin
 
 **Important:** The pairing code expires after 5 minutes. If it expires before the plugin connects, generate a new one.
+
+---
+
+## 🕒 Version History Tools
+
+Six tools that turn a Figma file from a static snapshot into a queryable history. They compose: list versions → diff → generate changelog → blame specific changes back to the version that introduced them. All cache aware (past versions are immutable, so repeat queries on the same range cost zero new API calls).
+
+**Required scope:** `file_versions:read` (OAuth) or **Versions** (Read) on a Personal Access Token, in addition to the standard `file_content:read`.
+
+### `figma_get_file_versions`
+
+List a file's version history with author, label, description, and timestamp metadata. Auto-paginates up to `max_versions`. Defaults to **labeled-only** (skips auto-saves) — pass `include_autosaves: true` to see every saved state.
+
+**Usage:**
+```javascript
+figma_get_file_versions({
+  fileUrl: 'https://www.figma.com/design/abc123/My-File',  // optional
+  include_autosaves: false,                                // default
+  max_versions: 50,                                        // default 50, max 200
+  cursor: 'vSomeId'                                        // optional, for pagination
+})
+```
+
+Returns `{ versions: [...], pagination: { has_more, next_cursor, returned, filtered_out_autosaves } }`. Each version entry includes `id`, `label`, `description`, `created_at`, `user.handle`, and `is_labeled`.
+
+### `figma_get_file_at_version`
+
+Snapshot a file (or selected nodes) as it existed at a past `version_id`. Thin wrapper over `figma_get_file_data` with the version param plumbed through.
+
+**Usage:**
+```javascript
+figma_get_file_at_version({
+  version_id: '2332825592044334783',
+  node_ids: ['4271:9562'],   // optional — scope to specific nodes
+  depth: 2                    // optional — limit recursion
+})
+```
+
+### `figma_diff_versions`
+
+Structured diff between two versions. Always returns a cheap page-structure diff (~2 API calls, parallel). When `component_ids` are passed, additionally produces per-node diffs at depth=2: added/removed children (variants), name/description changes, `componentPropertyDefinitions` changes, and `boundVariables` deltas.
+
+**Usage:**
+```javascript
+figma_diff_versions({
+  from_version: '2285226350723738406',
+  to_version: '2332825592044334783',  // or 'current' for HEAD
+  component_ids: ['4271:9562'],        // optional — falls back to current Figma selection
+  mode: 'detailed'                     // 'summary' | 'standard' (default) | 'detailed'
+})
+```
+
+**Note:** Variable VALUE history is not retrievable from Figma REST API. Variable definition value changes between versions are not represented; only binding-reference changes on scoped nodes are detected. This limitation is surfaced in the response's `notes[]`.
+
+### `figma_get_changes_since_version`
+
+Convenience wrapper for `figma_diff_versions` with `to_version="current"` (HEAD). Useful for "what's changed since the last code-sync" workflows.
+
+```javascript
+figma_get_changes_since_version({
+  since_version: '2332825592044334783',
+  component_ids: ['4271:9562']  // optional, falls back to selection
+})
+```
+
+### `figma_generate_changelog`
+
+Markdown changelog generator. Wraps `figma_diff_versions` with author enrichment (one extra cheap API call to look up labels and authors for the from/to versions). Returns BOTH a `markdown` string ready for release notes / PRs / Storybook MDX, and the structured diff payload.
+
+```javascript
+figma_generate_changelog({
+  from_version: 'vEarlier',
+  to_version: 'current',
+  component_ids: ['4271:9562'],   // optional, falls back to selection
+  mode: 'standard'                // 'summary' | 'standard' (default) | 'detailed'
+})
+```
+
+Mode controls verbosity: `summary` produces a one-line release note; `standard` includes sectioned page + per-component change counts; `detailed` includes per-property and per-binding bullets.
+
+### `figma_blame_node`
+
+Find the version that introduced a specific change to a node — answers "who/when added this." Walks history backward via **binary search** (~log₂(N) probes instead of N), so a 200-version lookback typically costs ~8 API calls instead of 200.
+
+```javascript
+figma_blame_node({
+  node_id: '4271:9562',                          // optional, falls back to selection
+  target_component_property: 'Disabled#1:2',     // OR target_child_node_id
+  start_version: 'current',                      // walk backward from here
+  max_versions_to_walk: 200,                     // default 200, max 500
+  include_autosaves: true                        // default true — better attribution
+})
+```
+
+Returns `{ introduced_at: { version_id, label, created_at, user_handle, is_labeled }, attribution_certainty, summary, notes }`.
+
+`attribution_certainty` is one of:
+- `"exact"` — the introduction point is fully localized and authored by a real user
+- `"system_attributed"` — the introducing version was a system-triggered autosave (`user="Figma"`); set `include_autosaves: false` and re-run to find the labeled shipping author
+- `"exists_at_lookback_horizon"` — the actual introduction is older than `max_versions_to_walk`; raise the cap and retry
+- `"metadata_unavailable"` — introduction was at `start_version` itself but author lookup couldn't reach it within the version-list lookback
+
+**Honest about limits:** binary search assumes the target's existence is monotonic (added once, never removed). If the target was added, removed, then re-added, the tool may report a different introduction point than the original. This is called out in `notes[]` on every response.
 
 ---
 

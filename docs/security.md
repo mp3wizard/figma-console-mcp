@@ -109,15 +109,47 @@ All network communication is limited to:
 **No external dependencies at runtime** — No third-party analytics, CDNs, or external API calls beyond Figma.
 </Check>
 
-## Enterprise Considerations
+## Vendor Trust & Compliance
 
-### Compliance
+### Vendor Identity
+
+Figma Console MCP is built and maintained by **Southleft, LLC**. For security or legal inquiries that require a direct contact (vendor questionnaires, DPAs, procurement reviews), email **info@southleft.com**. For vulnerability reports, prefer the [private security advisory](https://github.com/southleft/figma-console-mcp/security/advisories/new) flow.
+
+### Formal Attestations
+
+Southleft does **not currently hold SOC 2, ISO 27001, or equivalent third-party attestations** for Figma Console MCP. The product is intentionally designed so that — particularly in Local mode — there is no vendor-side data processing that would require such attestations:
+
+- No Southleft-hosted service in the data path
+- No data persistence, telemetry, or analytics
+- No accounts, no user database, no logs leaving your machine
+
+The complete source is MIT-licensed and available for audit on [GitHub](https://github.com/southleft/figma-console-mcp). Releases are published to npm as [`figma-console-mcp`](https://www.npmjs.com/package/figma-console-mcp).
+
+### Data Processing & DPA
+
+| Mode | Southleft's Role | DPA Applicability |
+|------|------------------|-------------------|
+| **Local Mode** | Not a data processor. Southleft has no access to design data, credentials, or user information. All traffic is between your machine and Figma. | A DPA is not applicable — Southleft does not receive or process customer data. |
+| **Remote Mode** | Operates the Cloudflare Worker that brokers OAuth and proxies requests to Figma. No design data is persisted. | A DPA can be provided on request. Email info@southleft.com. |
+
+### Sub-processors
+
+| Mode | Sub-processors |
+|------|----------------|
+| **Local Mode** | None. |
+| **Remote Mode** | Cloudflare (Workers hosting, traffic transit), Figma (authentication and design API). |
+
+Figma is always in scope as the upstream platform regardless of mode, since Figma Console MCP is a client to the Figma API.
+
+### Compliance Posture
 
 | Standard | Status |
 |----------|--------|
-| **SOC 2** | Minimal surface (no data storage) |
-| **GDPR** | No personal data collection |
-| **HIPAA** | Not applicable |
+| **SOC 2 / ISO 27001** | Not currently attested. Minimal surface in Local mode (no vendor-side data storage or processing). |
+| **GDPR** | No personal data collected or processed by Southleft. Customers remain controllers of any data they choose to send to Figma via the tool. |
+| **HIPAA** | Not applicable. The product is not designed for or marketed to handle PHI. |
+
+## Enterprise Considerations
 
 ### Recommended Enterprise Setup
 

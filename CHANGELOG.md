@@ -5,6 +5,36 @@ All notable changes to Figma Console MCP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.0] - 2026-05-09
+
+Time-series awareness for design files. Six new tools that turn a Figma file from a static snapshot into a queryable history — list versions, snapshot any past version, diff two versions for added/removed/modified components and binding deltas, generate human-readable markdown changelogs, and trace exactly when (and by whom) a specific component property or variant was introduced via a binary-search blame walker. All composable, all cache-aware (~log₂(N) probes for blame, repeat queries on the same range nearly free), all honest about Figma REST API limits in `notes[]` responses.
+
+Cloud Mode also unblocked: re-added `file_comments:read`, `file_comments:write`, and `file_versions:read` to the OAuth scope set so cloud users can post comments and use the new version-history tools. Local PAT users add the `Versions (Read)` checkbox alongside their existing scopes.
+
+### Added
+
+- `figma_get_file_versions` — list a file's version history with author/label/timestamp metadata. Auto-paginates, defaults to labeled-only (skips auto-saves), configurable cap. Cursor-style pagination with response-provided `next_cursor`.
+- `figma_get_file_at_version` — snapshot a file (or specific node IDs) as it existed at a past version. Thin wrapper over `getFile`/`getNodes` with the `version` param.
+- `figma_diff_versions` — structured diff between any two versions. Always returns a cheap page-structure diff (~2 API calls, parallel). When `component_ids` are passed, additionally produces per-node diffs at depth=2: added/removed children (variants), name/description changes, `componentPropertyDefinitions` changes, and `boundVariables` deltas. Mode-aware (`summary` / `standard` / `detailed`). Falls back to current Figma selection when `component_ids` omitted.
+- `figma_get_changes_since_version` — convenience wrapper for `figma_diff_versions` with `to_version="current"` (HEAD). Same selection fallback.
+- `figma_generate_changelog` — markdown changelog generator. Wraps the diff with author enrichment via `figma_get_file_versions` lookback (one extra cheap API call). Returns BOTH a `markdown` string (paste into release notes / PRs / Storybook MDX) and the structured diff payload. Mode-aware verbosity. HEAD renders as "Current state" without false attribution.
+- `figma_blame_node` — find the version that introduced a specific component property or variant. Walks history backward via binary search (~log₂(N) probes instead of N). Default `include_autosaves: true` because most autosaves carry the real human user; system 'Figma' user is flagged via `attribution_certainty: "system_attributed"`. Falls back to current Figma selection when `node_id` omitted. Honest about the monotonic-existence assumption in `notes[]`.
+- LRU snapshot cache (in-memory, 50 entries default) for past-version fetches. Past versions are immutable, so cached snapshots never go stale within a process. HEAD is intentionally never cached. Repeat blame/diff queries on the same range are nearly free.
+- Cloud-mode OAuth scopes: `file_comments:read`, `file_comments:write`, `file_versions:read` re-added so cloud users can post comments AND use the new version-history tools.
+
+### Changed
+
+- Property-comparison helpers (`figmaRGBAToHex`, `normalizeColor`, `numericClose`) extracted from `design-code-tools.ts` into a shared `src/core/diff/property-compare.ts` module so the diff engine and parity checker can share without circular deps. Re-exported from the original location for back-compat.
+- `summary.api_calls_made` on diff/changelog responses now reflects actual live calls (zero on a fully-cached repeat). New `cache_hits` field exposes how many fetches were served from cache.
+- Tool descriptions for blame/diff/changelog clarify that they fall back to the current Figma selection when scope is omitted.
+
+### Fixed
+
+- Versions list pagination cursor direction (`figma_get_file_versions`). The Figma REST API uses `?after=ID` (not `?before=`) to walk into older history; the inverted cursor was returning the same labeled version repeatedly. Empirically verified against a 1000+ version file.
+- `next_cursor` on `figma_get_file_versions` now reflects the LAST DISPLAYED item, not the last received from the API. Previous behavior would silently skip 40 versions if a caller paged forward with `max_versions=10` (since each page fetches 50 from Figma).
+- Changelog markdown formatter no longer emits double blank lines between component change-count subtitle and the first sub-section when no intermediate bullets are present.
+
+
 ## [1.22.4] - 2026-04-28
 
 Critical patch release. Restores compatibility with Gemini CLI / OpenCode / Codex CLI clients that broke in v1.21+, fixes silent variable-fetch failures via the Desktop Bridge, and addresses the plugin-version cache-staleness pattern that caused "Unknown method" errors after upgrades.
@@ -644,6 +674,7 @@ Connection health protocol — agents no longer need custom health-check logic t
 - Real-time Figma Desktop Bridge plugin
 - Support for both local (stdio) and Cloudflare Workers deployment
 
+[1.23.0]: https://github.com/southleft/figma-console-mcp/compare/v1.22.4...v1.23.0
 [1.22.4]: https://github.com/southleft/figma-console-mcp/compare/v1.22.3...v1.22.4
 [1.22.3]: https://github.com/southleft/figma-console-mcp/compare/v1.22.1...v1.22.3
 [1.22.1]: https://github.com/southleft/figma-console-mcp/compare/v1.22.0...v1.22.1
