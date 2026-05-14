@@ -104,6 +104,28 @@ export interface DocumentChangeEntry {
 }
 
 /**
+ * v1.25.0: A single metadata-only change captured by the plugin and forwarded
+ * over the WebSocket. Tracks the two fields Figma REST never exposes in version
+ * snapshots — `description` and `annotations` — so `figma_diff_versions` can
+ * surface them by correlating buffer entries to the diff time window.
+ *
+ * The plugin captures these on `figma.on('documentchange')` when a PROPERTY_CHANGE
+ * touches one of those fields. Only the NEW value is captured (Figma's event
+ * doesn't include before/after). The diff engine treats the from-version's
+ * value as "whatever it was at the start of the window" — buffer entries
+ * within the window are interpreted as "during this version range, the field
+ * was edited; final value at end of window is shown."
+ */
+export interface MetadataChangeEntry {
+  node_id: string;
+  node_name: string | null;
+  node_type: string | null;
+  field: 'description' | 'annotations';
+  new_value: any;
+  timestamp: number;
+}
+
+/**
  * Per-file client connection state.
  * Each Figma file with the Desktop Bridge plugin open gets its own ClientConnection.
  */
@@ -112,6 +134,8 @@ export interface ClientConnection {
   fileInfo: ConnectedFileInfo;
   selection: SelectionInfo | null;
   documentChanges: DocumentChangeEntry[];
+  /** v1.25.0: per-file ring buffer of description/annotation change events */
+  metadataChanges: MetadataChangeEntry[];
   consoleLogs: ConsoleLogEntry[];
   lastActivity: number;
   lastPongAt: number;
@@ -415,6 +439,34 @@ export class FigmaWebSocketServer extends EventEmitter {
         this.emit('documentChange', { fileKey: found?.fileKey ?? null, ...message.data });
       }
 
+      // v1.25.0: buffer description/annotation changes for the specific file.
+      // These are the diff-engine blind spots that Figma REST doesn't expose;
+      // the diff engine consults this buffer when correlating to a version
+      // range, so changes made while the plugin was connected become visible.
+      if (message.type === 'METADATA_CHANGE' && message.data) {
+        const found = this.findClientByWs(ws);
+        if (found) {
+          const changes: any[] = Array.isArray(message.data.changes) ? message.data.changes : [];
+          for (const c of changes) {
+            if (!c || typeof c.node_id !== 'string' || !c.field) continue;
+            const entry: MetadataChangeEntry = {
+              node_id: c.node_id,
+              node_name: c.node_name ?? null,
+              node_type: c.node_type ?? null,
+              field: c.field === 'annotations' ? 'annotations' : 'description',
+              new_value: c.new_value,
+              timestamp: typeof c.timestamp === 'number' ? c.timestamp : Date.now(),
+            };
+            found.client.metadataChanges.push(entry);
+            if (found.client.metadataChanges.length > this.documentChangeBufferSize) {
+              found.client.metadataChanges.shift();
+            }
+          }
+          found.client.lastActivity = Date.now();
+        }
+        this.emit('metadataChange', { fileKey: found?.fileKey ?? null, changes: message.data.changes });
+      }
+
       // Track selection changes — user interaction makes this the active file
       if (message.type === 'SELECTION_CHANGE' && message.data) {
         const found = this.findClientByWs(ws);
@@ -529,6 +581,7 @@ export class FigmaWebSocketServer extends EventEmitter {
       },
       selection: existing?.selection || null,
       documentChanges: existing?.documentChanges || [],
+      metadataChanges: existing?.metadataChanges || [],
       consoleLogs: existing?.consoleLogs || [],
       lastActivity: Date.now(),
       lastPongAt: Date.now(),
@@ -781,6 +834,55 @@ export class FigmaWebSocketServer extends EventEmitter {
     if (!client) return 0;
     const count = client.documentChanges.length;
     client.documentChanges = [];
+    return count;
+  }
+
+  /**
+   * v1.25.0: Get buffered description/annotation change events for a file.
+   *
+   * Used by `figma_diff_versions` to surface changes that Figma REST doesn't
+   * expose. The diff engine passes a time window (from-version → to-version
+   * `last_modified` timestamps converted to Unix ms) and optional scoping by
+   * node IDs.
+   *
+   * Defaults to the active file if `fileKey` is omitted.
+   */
+  getMetadataChanges(options?: {
+    fileKey?: string;
+    since?: number;
+    until?: number;
+    nodeIds?: string[];
+  }): MetadataChangeEntry[] {
+    const fileKey = options?.fileKey ?? this._activeFileKey;
+    if (!fileKey) return [];
+    const client = this.clients.get(fileKey);
+    if (!client) return [];
+
+    let filtered = [...client.metadataChanges];
+
+    if (options?.since !== undefined) {
+      filtered = filtered.filter((e) => e.timestamp >= options.since!);
+    }
+    if (options?.until !== undefined) {
+      filtered = filtered.filter((e) => e.timestamp <= options.until!);
+    }
+    if (options?.nodeIds && options.nodeIds.length > 0) {
+      const set = new Set(options.nodeIds);
+      filtered = filtered.filter((e) => set.has(e.node_id));
+    }
+
+    return filtered;
+  }
+
+  /**
+   * v1.25.0: Clear metadata-change buffer for the active file.
+   */
+  clearMetadataChanges(): number {
+    if (!this._activeFileKey) return 0;
+    const client = this.clients.get(this._activeFileKey);
+    if (!client) return 0;
+    const count = client.metadataChanges.length;
+    client.metadataChanges = [];
     return count;
   }
 

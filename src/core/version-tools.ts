@@ -135,12 +135,43 @@ const MAX_VERSIONS_HARD_CAP = 200;
 // Tool Registration
 // ============================================================================
 
+/**
+ * v1.25.0: a description/annotation change captured by the Desktop Bridge
+ * plugin's documentchange listener. The diff engine queries this buffer to
+ * surface metadata changes that Figma REST omits from version snapshots.
+ *
+ * Filtered by file key, time window (Unix ms), and optionally node IDs.
+ */
+export interface MetadataChangeBufferEntry {
+	node_id: string;
+	node_name: string | null;
+	node_type: string | null;
+	field: "description" | "annotations";
+	new_value: any;
+	timestamp: number;
+}
+
+export type GetMetadataChanges = (options: {
+	fileKey?: string;
+	since?: number;
+	until?: number;
+	nodeIds?: string[];
+}) => MetadataChangeBufferEntry[];
+
 export function registerVersionTools(
 	server: McpServer,
 	getFigmaAPI: () => Promise<FigmaAPI>,
 	getCurrentUrl: () => string | null,
 	_options?: { isRemoteMode?: boolean },
 	getCurrentSelectedNodeIds?: () => string[] | null,
+	/**
+	 * v1.25.0: optional metadata-change buffer reader. When wired (local mode),
+	 * the diff engine consults this to surface description/annotation edits
+	 * that Figma REST doesn't expose. In cloud mode (no plugin buffer
+	 * available), this stays undefined and the diff just doesn't surface
+	 * those edits — but scope_coverage still tells callers about the gap.
+	 */
+	getMetadataChanges?: GetMetadataChanges,
 ): void {
 	// Helper: read the current Figma selection as a list of node IDs, or null
 	// if no selection getter is wired (cloud mode) or selection is empty.
@@ -148,6 +179,13 @@ export function registerVersionTools(
 		if (!getCurrentSelectedNodeIds) return null;
 		const ids = getCurrentSelectedNodeIds();
 		return ids && ids.length > 0 ? ids : null;
+	};
+
+	// v1.25.0: convert an ISO8601 timestamp to Unix ms. Tolerates missing input.
+	const toUnixMs = (iso: string | null | undefined): number | null => {
+		if (!iso) return null;
+		const t = Date.parse(iso);
+		return Number.isFinite(t) ? t : null;
 	};
 	// -----------------------------------------------------------------------
 	// Tool: figma_get_file_versions
@@ -551,8 +589,56 @@ export function registerVersionTools(
 			const fromMeta = extractFileMeta(fromFile.data, from_version);
 			const toMeta = extractFileMeta(toFile.data, to_version);
 
+			// v1.25.0: query the plugin metadata buffer for description/annotation
+			// changes within the diff's time window. The buffer is only populated
+			// when the Desktop Bridge plugin was connected during the edit — so
+			// edits made offline (or before this MCP session started) won't appear.
+			// That limit is surfaced in scope_coverage + notes.
+			const fromMs = toUnixMs(fromMeta.last_modified) ?? undefined;
+			const toMs = toUnixMs(toMeta.last_modified) ?? Date.now();
+			let bufferedMetadata: MetadataChangeBufferEntry[] = [];
+			let metadataBufferAvailable = false;
+			let unscopedMetadataChanges: MetadataChangeBufferEntry[] = [];
+			if (getMetadataChanges) {
+				metadataBufferAvailable = true;
+				try {
+					bufferedMetadata = getMetadataChanges({
+						fileKey,
+						since: fromMs,
+						until: toMs,
+					});
+				} catch (e) {
+					logger.warn({ err: e }, "Metadata buffer lookup failed; continuing without metadata changes");
+					bufferedMetadata = [];
+				}
+			}
+
+			// Attach buffer entries to the scoped node diffs whose id matches.
+			// Entries that don't match any scoped id surface separately so the
+			// caller can still see "the buffer has 3 description edits on nodes
+			// you didn't ask about" instead of dropping them on the floor.
+			if (bufferedMetadata.length > 0) {
+				const scopedById = new Map(scoped.map((n) => [n.node_id, n]));
+				const consumed = new Set<MetadataChangeBufferEntry>();
+				for (const entry of bufferedMetadata) {
+					const target = scopedById.get(entry.node_id);
+					if (target) {
+						(target.metadata_changes ??= []).push({
+							field: entry.field,
+							new_value: entry.new_value,
+							timestamp: entry.timestamp,
+							source: "plugin_buffer",
+						});
+						target.change_count += 1;
+						consumed.add(entry);
+					}
+				}
+				unscopedMetadataChanges = bufferedMetadata.filter((e) => !consumed.has(e));
+			}
+
 			const notes: string[] = [];
-			if (!component_ids || component_ids.length === 0) {
+			const hasScopedNodes = !!(component_ids && component_ids.length > 0);
+			if (!hasScopedNodes) {
 				notes.push(
 					"Only page-structure diff returned. Pass component_ids to get per-component analysis (added/removed children, property changes, binding changes), or have a node selected in Figma when you call.",
 				);
@@ -562,9 +648,37 @@ export function registerVersionTools(
 					`Auto-scoped to ${component_ids?.length ?? 0} node(s) from the current Figma selection. Pass component_ids explicitly to override.`,
 				);
 			}
+			// Always-on coverage warnings — the failure mode we're guarding against is
+			// the user (or an AI client) believing "no changes found" means "nothing
+			// changed," when in fact the change is in a category this tool doesn't
+			// track. Better to be loud about limits than silently miss real edits.
+			if (hasScopedNodes) {
+				notes.push(
+					"Component-scoped diff covers the canonical components only. INSTANCES of these components placed elsewhere on the canvas (documentation examples, hero frames, mockups) are NOT diffed. For forensic per-session edits including instance changes, use figma_get_design_changes. To diff a specific instance, pass its node ID explicitly.",
+				);
+			}
+			notes.push(
+				"Raw layout/visual properties are NOT tracked. This includes layoutSizingHorizontal/Vertical (hug vs. fill), primaryAxisSizingMode/counterAxisSizingMode, raw paddings/widths/cornerRadius when not bound to a variable, and unbound fills/strokes/effects. This tool surfaces structural deltas (children, property defs, name, description) and variable-BINDING deltas only.",
+			);
 			notes.push(
 				"Variable VALUE history is not retrievable from Figma REST API. Variable definition value changes between these versions are not represented; only binding-reference changes on scoped nodes are detected.",
 			);
+			// v1.25.0: surface metadata-buffer state. Either "tracked via plugin buffer"
+			// (and any limits) or "not tracked at all" (cloud mode / plugin absent).
+			if (metadataBufferAvailable) {
+				notes.push(
+					"Description and annotation changes ARE tracked when the Desktop Bridge plugin was connected during the edit. They appear under each node's metadata_changes[]. Edits made while the plugin was disconnected (or before this MCP session started) WON'T appear in the buffer — the diff will silently miss them.",
+				);
+				if (bufferedMetadata.length === 0) {
+					notes.push(
+						"No description or annotation changes were captured by the plugin buffer in this version window. Either no such edits happened, or they occurred while the plugin was disconnected.",
+					);
+				}
+			} else {
+				notes.push(
+					"Description and annotation changes are NOT being tracked — no metadata buffer is wired (typically cloud mode without an active Desktop Bridge connection). For description/annotation visibility, use local mode with the plugin running.",
+				);
+			}
 			if (fetchErrors.length > 0) {
 				notes.push(
 					`Failed to fetch ${fetchErrors.length} of ${component_ids?.length ?? 0} requested nodes — see _fetch_errors.`,
@@ -578,7 +692,7 @@ export function registerVersionTools(
 				from: fromMeta,
 				to: toMeta,
 				page_structure: pageDiff,
-				scoped_nodes: component_ids && component_ids.length > 0 ? scoped : undefined,
+				scoped_nodes: hasScopedNodes ? scoped : undefined,
 				summary: {
 					page_changes:
 						pageDiff.summary.added + pageDiff.summary.removed + pageDiff.summary.renamed,
@@ -589,6 +703,74 @@ export function registerVersionTools(
 					api_calls_made: apiCalls,
 					cache_hits: cacheHits,
 				},
+				// scope_coverage is an always-on, machine-readable summary of what the
+				// diff DID and DID NOT examine. AI clients should check this before
+				// concluding "nothing else changed." See notes[] for prose warnings.
+				scope_coverage: {
+					page_structure_diffed: true,
+					component_ids_diffed: component_ids ?? [],
+					max_depth: 2,
+					/**
+					 * v1.25.0: metadata-buffer state. When the plugin is connected
+					 * during edits, description/annotation changes ARE tracked.
+					 * `metadata_buffer.available: false` means the diff is REST-only
+					 * and description/annotation edits are invisible.
+					 */
+					metadata_buffer: {
+						available: metadataBufferAvailable,
+						entries_in_window: bufferedMetadata.length,
+						entries_matched_to_scoped_nodes:
+							bufferedMetadata.length - unscopedMetadataChanges.length,
+						entries_outside_scope: unscopedMetadataChanges.length,
+					},
+					tracks: [
+						"page structure (added/removed/renamed pages)",
+						"component children (added/removed)",
+						"componentPropertyDefinitions (added/removed/type/default)",
+						"name and description changes on scoped nodes",
+						"variable binding references on scoped nodes",
+						...(metadataBufferAvailable
+							? [
+									"component descriptions via plugin session buffer (when plugin connected during edit)",
+									"Dev Mode annotations via plugin session buffer (when plugin connected during edit)",
+								]
+							: []),
+					],
+					does_not_track: [
+						"instances of components on the canvas (unless passed as component_ids)",
+						"raw layout properties (layoutSizingHorizontal/Vertical, unbound paddings/widths)",
+						"raw visual properties (cornerRadius, unbound fills/strokes/effects, opacity)",
+						"variable VALUE changes (Figma REST does not expose this)",
+						"style content changes (only style add/remove via component reachability)",
+						...(metadataBufferAvailable
+							? [
+									"description/annotation edits made while the Desktop Bridge plugin was disconnected",
+								]
+							: [
+									"component descriptions (Figma REST omits them; no plugin buffer wired in this mode)",
+									"Dev Mode annotations (Figma REST omits them; no plugin buffer wired in this mode)",
+								]),
+						"canvas frame edits outside scoped components",
+					],
+					complementary_tools: [
+						"figma_get_design_changes — forensic per-session edits including raw property changes on instances",
+						"figma_get_variables — current variable state (no history available)",
+						"figma_get_styles — current style state",
+						"figma_get_component — live description and annotation state for a single node",
+					],
+				},
+				unscoped_metadata_changes:
+					unscopedMetadataChanges.length > 0
+						? unscopedMetadataChanges.map((e) => ({
+								node_id: e.node_id,
+								node_name: e.node_name,
+								node_type: e.node_type,
+								field: e.field,
+								new_value: e.new_value,
+								timestamp: e.timestamp,
+								source: "plugin_buffer" as const,
+							}))
+						: undefined,
 				notes,
 				_fetch_errors: fetchErrors.length > 0 ? fetchErrors : undefined,
 			};
@@ -686,7 +868,7 @@ export function registerVersionTools(
 	// -----------------------------------------------------------------------
 	server.tool(
 		"figma_diff_versions",
-		"Diff two versions of a Figma file. Always returns a cheap page-structure diff (added/removed/renamed pages, 2 API calls). Pass component_ids to additionally get per-node deep diffs at depth=2 (added/removed children, name/description changes, componentPropertyDefinitions changes for COMPONENT_SETs, boundVariables deltas) — costs 2 API calls per scoped node. Use 'current' for to_version to diff against HEAD. NOTE: variable VALUE history is not retrievable from Figma REST and is not represented in this diff.",
+		"Diff two versions of a Figma file. Always returns a cheap page-structure diff (added/removed/renamed pages, 2 API calls). Pass component_ids to additionally get per-node deep diffs at depth=2 (added/removed children, name/description changes, componentPropertyDefinitions changes for COMPONENT_SETs, boundVariables deltas) — costs 2 API calls per scoped node. Use 'current' for to_version to diff against HEAD. v1.25.0: when the Desktop Bridge plugin is connected, description and Dev Mode annotation changes are ALSO tracked via a session buffer and surfaced under `scoped_nodes[].metadata_changes[]` and `unscoped_metadata_changes[]` — Figma REST omits these from version snapshots so they're otherwise invisible. STILL NOT tracked: instances of components on the canvas, raw layout properties (layoutSizingHorizontal/Vertical, unbound paddings/widths), raw visual properties (cornerRadius, unbound fills), variable VALUE changes, style content, and metadata edits made while the plugin was disconnected. See `scope_coverage` and `notes[]` for the full coverage map and complementary tools.",
 		{
 			fileUrl: z
 				.string()

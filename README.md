@@ -788,7 +788,7 @@ The architecture supports adding new apps with minimal boilerplate — each app 
 
 ## 🛤️ Roadmap
 
-**Current Status:** v1.17.0 (Stable) - Production-ready with FigJam + Slides support, Cloud Write Relay, Design System Kit, WebSocket-only connectivity, smart multi-file tracking, 100+ tools, Comments API, and MCP Apps
+**Current Status:** v1.23.0 (Stable) - Production-ready with version history & time-series awareness, FigJam + Slides support, Cloud Write Relay, Design System Kit, WebSocket-only connectivity, smart multi-file tracking, 100+ tools, Comments API, and MCP Apps
 
 **Recent Releases:**
 - [x] **v1.17.0** - Figma Slides Support: 15 new tools for managing presentations — slides, transitions, content, reordering, and navigation. Inspired by Toni Haidamous (PR #11).

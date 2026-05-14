@@ -35,9 +35,9 @@ Complete setup instructions for connecting Figma Console MCP to various AI clien
 | Real-time selection/change tracking | ✅ | ❌ | ❌ |
 | Console log streaming | ✅ | ❌ | ❌ |
 | Requires Node.js | Yes | No | No |
-| **Total tools available** | **100+** | **43** | **22** |
+| **Total tools available** | **100+** | **83** | **9** |
 
-> **Bottom line:** Remote mode is **read-only** with 22 tools. Cloud Mode adds **write access** ((83 tools)) without Node.js. Local (NPX/Git) has **everything** (100+ tools) including real-time monitoring.
+> **Bottom line:** Remote mode is **read-only** with 9 tools. Cloud Mode adds **write access** (83 tools) without Node.js. Local (NPX/Git) has **everything** (100+ tools) including real-time monitoring.
 
 ---
 
@@ -358,7 +358,7 @@ Then restart Claude Desktop.
 
 **Best for:** Claude.ai, v0, Replit, Lovable, and any MCP-capable web platform that needs to create and modify Figma designs.
 
-**What you get:** 44 tools — full write access (create frames, components, variables, edit designs) plus REST API reads. This is Remote Mode upgraded with the Cloud Write Relay.
+**What you get:** 83 tools — full write access (create frames, components, variables, edit designs) plus REST API reads, design system extraction, comments, version history, slides, FigJam, and annotations. This is Remote Mode upgraded with the Cloud Write Relay.
 
 **What you don't get vs Local:** Real-time selection tracking, document change monitoring, and console log streaming (these require a local WebSocket connection).
 
@@ -412,7 +412,7 @@ How to add this depends on your platform:
 
 4. **Done.** Your AI now has full write access to the open Figma file through the cloud relay.
 
-### What You Can Do (44 Tools)
+### What You Can Do (83 Tools)
 
 - ✅ Create frames, shapes, and components
 - ✅ Edit existing designs (resize, reposition, restyle)

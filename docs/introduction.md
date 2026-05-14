@@ -193,7 +193,7 @@ Get all 100+ tools including design creation, variable management, and component
 
 ### Cloud Mode (Web AI Clients)
 
-Using Claude.ai, v0, Replit, or Lovable? Get full write access (((83 tools))) without installing Node.js.
+Using Claude.ai, v0, Replit, or Lovable? Get full write access (83 tools) without installing Node.js.
 
 <Steps>
   <Step title="Run the Desktop Bridge Plugin">

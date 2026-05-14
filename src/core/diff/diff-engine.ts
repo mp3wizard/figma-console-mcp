@@ -262,6 +262,19 @@ export interface NodeChildSummary {
 	type: string;
 }
 
+/**
+ * v1.25.0: a metadata-only change captured via the Plugin API session buffer.
+ * Surfaces description/annotation edits that Figma REST doesn't expose in
+ * version snapshots. Populated when the diff time window overlaps with
+ * buffered plugin events; absent/empty otherwise.
+ */
+export interface MetadataChange {
+	field: "description" | "annotations";
+	new_value: any;
+	timestamp: number;
+	source: "plugin_buffer";
+}
+
 export interface NodeDiff {
 	node_id: string;
 	node_name: string;
@@ -272,6 +285,8 @@ export interface NodeDiff {
 	children_removed: NodeChildSummary[];
 	component_properties: ComponentPropertyDefDiff | null;
 	binding_changes: BindingChange[];
+	/** v1.25.0: description/annotation changes captured via plugin session buffer */
+	metadata_changes?: MetadataChange[];
 	change_count: number;
 	notes: string[];
 }

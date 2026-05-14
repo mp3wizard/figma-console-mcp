@@ -5992,6 +5992,13 @@ return {
 				const sel = this.wsServer?.getCurrentSelection();
 				return sel?.nodes?.map((n) => n.id) ?? null;
 			},
+			// v1.25.0: metadata-change buffer reader. Surfaces description/annotation
+			// edits captured by the Desktop Bridge plugin while it was connected.
+			// Returns [] if the WebSocket server isn't running.
+			(opts) => {
+				if (!this.wsServer) return [];
+				return this.wsServer.getMetadataChanges(opts);
+			},
 		);
 
 		// Register Design System Kit tool

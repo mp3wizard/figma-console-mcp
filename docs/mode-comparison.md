@@ -37,10 +37,10 @@ The MCP server has **three execution modes** and **four setup methods**:
 | Mode | Tools Available | Write Access | Needs Node.js | Real-time |
 |------|-----------------|--------------|---------------|-----------|
 | **Local Mode** (NPX or Git) | **100+** | Yes | Yes | Yes |
-| **Cloud Mode** (Remote + Relay) | **43** | Yes | No | No |
-| **Remote Mode** (read-only) | **22** | No | No | No |
+| **Cloud Mode** (Remote + Relay) | **83** | Yes | No | No |
+| **Remote Mode** (read-only) | **9** | No | No | No |
 
-> **Bottom line:** Remote mode is read-only (83 tools). Cloud Mode adds write access ((83 tools)) without Node.js. Local has everything (100+ tools) including real-time monitoring.
+> **Bottom line:** Remote mode is read-only (83 tools). Cloud Mode adds write access (83 tools) without Node.js. Local has everything (100+ tools) including real-time monitoring.
 
 ### Use NPX Setup (Recommended for Most Users)
 - ✅ **All 100+ tools** including design creation and real-time monitoring
@@ -50,7 +50,7 @@ The MCP server has **three execution modes** and **four setup methods**:
 - ⚠️ Requires Node.js 18+ and `FIGMA_ACCESS_TOKEN` (manual, one-time)
 
 ### Use Cloud Mode (Web AI Clients)
-- ✅ **(83 tools)** — full write access (create, edit, delete) plus REST API reads
+- ✅ **83 tools** — full write access (create, edit, delete) plus REST API reads
 - ✅ No Node.js required — only Figma Desktop with the Desktop Bridge plugin
 - ✅ Works with Claude.ai, v0, Replit, Lovable, any MCP-capable web platform
 - ✅ Variables without Enterprise plan (via Plugin API)
@@ -162,7 +162,7 @@ Figma Design Data
 - No Node.js required — relay runs entirely in Cloudflare Workers
 - Desktop Bridge plugin connects to the cloud relay via WebSocket
 - Pairing flow: AI generates 6-character code → user enters in plugin → connected
-- (83 tools): 1 pairing + 27 write tools + 15 REST API reads
+- 83 tools available after pairing — write/manipulation + REST API reads + design system + slides + figjam + annotations + comments + version history
 - Variables work on any Figma plan (uses Plugin API, not Enterprise REST API)
 - Pairing code expires after 5 minutes
 
@@ -385,7 +385,7 @@ The Desktop Bridge Plugin is the bridge between Figma and the MCP server. It com
 
 **Local Mode Transport:** The server automatically selects an available port in the range 9223–9232, supporting multiple simultaneous MCP instances. All 100+ tools work through the WebSocket transport.
 
-**Cloud Mode Transport:** The plugin connects to the Cloudflare relay after pairing. Write operations are relayed from the cloud MCP server through the Durable Object to the plugin. (83 tools) are available.
+**Cloud Mode Transport:** The plugin connects to the Cloudflare relay after pairing. Write operations are relayed from the cloud MCP server through the Durable Object to the plugin. 83 tools are available.
 
 ### Plugin Does NOT Work with Remote Read-Only Mode
 
@@ -508,8 +508,8 @@ All setup methods are completely free:
 - You don't need design creation capabilities
 
 **Key Takeaway:** The three modes offer a clear capability progression:
-- **Remote (read-only):** 22 tools — view data, screenshots, design system extraction
-- **Cloud Mode:** (83 tools) — adds full write access (create, edit, delete) via relay
+- **Remote (read-only):** 9 tools — view data, screenshots, design system extraction
+- **Cloud Mode:** 83 tools — adds full write access (create, edit, delete) via relay
 - **Local Mode (NPX/Git):** 100+ tools — adds real-time monitoring (selection, changes, console)
 
 The difference is not just authentication, but **fundamental capabilities**:

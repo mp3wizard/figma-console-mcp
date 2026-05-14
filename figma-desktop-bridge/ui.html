@@ -1043,6 +1043,14 @@
         }
       };
 
+      // v1.25.0: forward METADATA_CHANGE events (description/annotation edits)
+      // so figma_diff_versions can surface them despite Figma REST not exposing them.
+      window.__wsForwardMetadataChange = function(data) {
+        if (wsConnected) {
+          broadcastToAll({ type: 'METADATA_CHANGE', data: data });
+        }
+      };
+
       // Forward CONSOLE_CAPTURE events to all servers for console monitoring
       window.__wsForwardConsoleCapture = function(data) {
         if (wsConnected) {
@@ -1470,6 +1478,11 @@
         // Document change events (for cache invalidation via WebSocket)
         case 'DOCUMENT_CHANGE':
           if (window.__wsForwardDocumentChange) window.__wsForwardDocumentChange(msg.data);
+          break;
+
+        // v1.25.0: metadata change events (description/annotation edits via Plugin API)
+        case 'METADATA_CHANGE':
+          if (window.__wsForwardMetadataChange) window.__wsForwardMetadataChange(msg.data);
           break;
 
         // Console capture events (for console monitoring via WebSocket)

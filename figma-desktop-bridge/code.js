@@ -6,7 +6,7 @@
 
 // Plugin version — sent in FILE_INFO for server-side version compatibility checks.
 // The server compares this against its own version to detect stale cached plugins.
-var PLUGIN_VERSION = '1.23.0'; // Kept in sync with package.json by scripts/release.sh — see issue #62.
+var PLUGIN_VERSION = '1.25.0'; // Kept in sync with package.json by scripts/release.sh — see issue #62.
 
 console.log('🌉 [Desktop Bridge] Plugin loaded (v' + PLUGIN_VERSION + ')');
 
@@ -6299,6 +6299,12 @@ figma.loadAllPagesAsync().then(function() {
     var hasNodeChanges = false;
     var changedNodeIds = [];
 
+    // v1.25.0: also collect metadata-only changes (descriptions, annotations).
+    // These are properties that the REST API DOESN'T expose in version snapshots,
+    // so figma_diff_versions can't see them through REST alone. Forwarding them
+    // via the Plugin API + WebSocket is the only way to make them diff-visible.
+    var metadataChanges = [];
+
     for (var i = 0; i < event.documentChanges.length; i++) {
       var change = event.documentChanges[i];
       if (change.type === 'STYLE_CREATE' || change.type === 'STYLE_DELETE' || change.type === 'STYLE_PROPERTY_CHANGE') {
@@ -6309,6 +6315,48 @@ figma.loadAllPagesAsync().then(function() {
           changedNodeIds.push(change.id);
         }
       }
+
+      // Metadata change detection. PROPERTY_CHANGE includes a `properties` array
+      // listing which fields changed; we only snapshot the new value for the
+      // two fields Figma's REST never returns: `description` and `annotations`.
+      if (change.type === 'PROPERTY_CHANGE' && change.node && Array.isArray(change.properties)) {
+        for (var p = 0; p < change.properties.length; p++) {
+          var prop = change.properties[p];
+          if (prop === 'description' || prop === 'descriptionMarkdown' || prop === 'annotations') {
+            try {
+              var newValue = change.node[prop];
+              // Serialize annotations to plain JSON-safe form
+              if (prop === 'annotations' && Array.isArray(newValue)) {
+                newValue = newValue.map(function(a) {
+                  return {
+                    label: a.label || null,
+                    labelMarkdown: a.labelMarkdown || null,
+                    categoryId: a.categoryId || null,
+                    properties: a.properties || []
+                  };
+                });
+              }
+              metadataChanges.push({
+                node_id: change.node.id,
+                node_name: change.node.name || null,
+                node_type: change.node.type || null,
+                field: prop === 'descriptionMarkdown' ? 'description' : prop,
+                new_value: newValue,
+                timestamp: Date.now()
+              });
+            } catch (e) {
+              // Some property reads can throw on detached / deleted nodes
+            }
+          }
+        }
+      }
+    }
+
+    if (metadataChanges.length > 0) {
+      figma.ui.postMessage({
+        type: 'METADATA_CHANGE',
+        data: { changes: metadataChanges }
+      });
     }
 
     if (hasStyleChanges || hasNodeChanges) {
