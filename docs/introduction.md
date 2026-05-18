@@ -28,9 +28,12 @@ Without MCP, AI assistants are limited to what they already know. With MCP, they
 
 ### What it enables:
 
-<Columns cols={3}>
+<Columns cols={2}>
   <Card title="Extract" icon="download">
     Pull design tokens, components, and styles as structured data
+  </Card>
+  <Card title="Sync" icon="arrows-rotate">
+    Bidirectional token sync between Figma and your codebase (DTCG + CSS)
   </Card>
   <Card title="Create" icon="wand-magic-sparkles">
     Build UI components and layouts directly in Figma through conversation
@@ -174,7 +177,7 @@ Figma Console MCP makes this real. Your design system becomes:
 
 ### Recommended: NPX Setup (Full Capabilities)
 
-Get all 100+ tools including design creation, variable management, and component instantiation.
+Get all 103 tools including design creation, variable management, and component instantiation.
 
 <Steps>
   <Step title="Get a Figma Token">
@@ -193,7 +196,7 @@ Get all 100+ tools including design creation, variable management, and component
 
 ### Cloud Mode (Web AI Clients)
 
-Using Claude.ai, v0, Replit, or Lovable? Get full write access (83 tools) without installing Node.js.
+Using Claude.ai, v0, Replit, or Lovable? Get full write access (95 tools) without installing Node.js.
 
 <Steps>
   <Step title="Run the Desktop Bridge Plugin">
@@ -209,7 +212,7 @@ Using Claude.ai, v0, Replit, or Lovable? Get full write access (83 tools) withou
 
 ### Remote Mode (Read-Only)
 
-If you just want to explore or evaluate the tool, use Remote Mode. It's read-only (83 tools) but requires zero setup.
+If you just want to explore or evaluate the tool, use Remote Mode. It's read-only (9 tools) but requires zero setup.
 
 <Steps>
   <Step title="Open Claude Desktop Settings">
@@ -221,7 +224,7 @@ If you just want to explore or evaluate the tool, use Remote Mode. It's read-onl
 </Steps>
 
 <Warning>
-**Remote mode without pairing is read-only** (83 tools). For write access from web AI clients, use Cloud Mode above. For full capabilities with real-time monitoring, use NPX Setup.
+**Remote mode without pairing is read-only** (95 tools). For write access from web AI clients, use Cloud Mode above. For full capabilities with real-time monitoring, use NPX Setup.
 </Warning>
 
 <Card title="Full Setup Guide" icon="book-open" href="/setup">
@@ -286,13 +289,13 @@ Figma Console MCP offers three connection tiers with different capabilities:
 
 | Feature | Local (NPX/Git) | Cloud Mode | Remote (Read-Only) |
 |---------|-----------------|------------|-------------------|
-| **Total tools** | **100+** | **44** | **15** |
+| **Total tools** | **103** | **93** | **9** |
 | **Setup** | ~10 minutes | ~5 minutes | ~2 minutes |
 | **Create designs** | ✅ | ✅ | ❌ |
 | **Edit designs** | ✅ | ✅ | ❌ |
 | **Manage variables** | ✅ | ✅ | ❌ |
 | **Read design data** | ✅ | ✅ | ✅ |
-| **Accessibility scanning** | ✅ | ❌ | ❌ |
+| **Accessibility scanning** | ✅ | ✅ | ✅ |
 | **Variables on any plan** | ✅ | ✅ | Enterprise only |
 | **Requires Node.js** | Yes | No | No |
 
@@ -344,7 +347,7 @@ Figma Console MCP offers three connection tiers with different capabilities:
     Real-world examples and workflows
   </Card>
   <Card title="All Tools" icon="wrench" href="/tools">
-    Complete reference for 100+ tools
+    Complete reference for 103 tools
   </Card>
 </Columns>
 

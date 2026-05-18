@@ -5,6 +5,104 @@ All notable changes to Figma Console MCP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.27.1] - 2026-05-16
+
+Documentation patch. No code behavior changes. Catches the stale-content surface that the v1.27.0 release missed — the README's front-page banner still announced v1.23.0 (the previous user-visible release notes), and several tool descriptions / error messages / internal comments still said "Phase 1 ships with DTCG only" even though CSS variables formatter and the apply phase shipped during the v1.27.0 development cycle.
+
+### Changed
+
+- **README.md front-page banner** — was still announcing v1.23.0's "Version History & Time-Series Awareness" callout. Now shows the v1.27.0 token sync headline. The four releases between (v1.24–v1.27) had each shipped without updating the banner; this release sweeps every stale prose claim across README, docs, and source comments.
+- **"What is this?" capability list** in README — added bidirectional token sync (the v1.27.0 headline), version history & time-series awareness, Slides presentations, and cross-MCP identity disambiguation.
+- **Roadmap** — updated to v1.27.0 status, added entries for v1.27.0 / v1.26.0 / v1.25.0 / v1.24.0, trimmed pre-v1.7 entries to keep the list scannable.
+- **AI-facing tool descriptions** for `figma_export_tokens` and `figma_import_tokens` — replaced "Phase 1 ships with DTCG only" with the current accurate scope: DTCG + CSS variables fully implemented, apply phase pushes value updates end-to-end with partial-success semantics, what's still deferred.
+- **User-facing error messages** in the format stub classes — now correctly state that DTCG (parser + formatter) AND CSS variables (formatter only) are the fully-implemented paths.
+- **Internal comments** in `src/core/tokens-tools.ts` and `src/core/tokens/transforms/` — softened "Phase 1 stub" / "Phase 2.5 will resolve" language to current-state descriptions.
+- **Tool count consistency** — residual "93 tools" Cloud Mode references in `docs/mode-comparison.md` / `docs/setup.md` / `docs/tools.md` that the v1.27.0 release script's regex didn't catch are now 95.
+
+### Fixed
+
+- Shell-escape bug in EXPORT_TOOL_DESCRIPTION introduced during the audit pass: unescaped backticks inside the template literal (for `:root`, `.dark` selector examples) caused a TypeScript compile error. Backticks escaped.
+
+## [1.27.0] - 2026-05-16
+
+Bidirectional design token sync. Two new MCP tools replace Style Dictionary and Tokens Studio's export pipeline for popular styling methods. Designers can now ask their AI to push a hex value edit back to Figma — the diff-aware import produces exactly one Figma API call for that one variable, not a full collection rewrite.
+
+The full pipeline is operational end-to-end: **Figma variables → DTCG JSON + CSS custom properties → edit hex → push to Figma**. Verified against two real design systems with different architectures (CollegeTown's 713-token TailwindCSS-derived setup with multi-mode tokens, and Altitude's 280-token 3-tier + brand-layer architecture). Both round-trip cleanly with `0 toCreate / 0 toUpdate / 0 toDelete` after export.
+
+**Existing users (Local and Cloud Mode) are not impacted by these additions.** No existing tool changed name, schema, or behavior. No new required env vars, dependencies, or plugin protocol changes. Plugin re-import is **not required** — the wire protocol is unchanged.
+
+### Added
+
+- **`figma_export_tokens`** (Local + Cloud Mode) — Pull every variable across every collection and mode, normalize to canonical DTCG JSON (W3C Design Tokens Community Group spec), and fan out to one or more output formats. Phase 1 ships fully working DTCG canonical output + CSS custom properties (Tailwind v4 `@theme`, SCSS, TypeScript modules, etc. are scaffolded — DTCG canonical is the only format whose serializer is implemented; CSS variables is the second). Multi-mode tokens encoded via per-mode files with the file's mode name stamped in `$extensions["figma-console-mcp"].fileMode` for round-trip recovery. Cross-library aliases (variables pointing at published-library targets the local Plugin API doesn't return) preserve the original Figma variable ID in `{__library:VariableID:...}` references — CSS formatters emit a traceable comment instead of broken `var()` references.
+- **`figma_import_tokens`** (Local + Cloud Mode) — Parse any supported source format, diff against current Figma state via ID-first / path-second / value-fingerprint match, and apply only the deltas via the Plugin API. Default `merge` strategy preserves Figma-only and code-only tokens. `dry-run` (the default for the first call after detecting changes) returns a structured diff plan without mutating Figma. Real apply phase wired through `connector.executeCodeViaUI` → `figma.variables.setValueForMode` — verified working against CollegeTown's 3-mode `base/primary` and Altitude's 4-brand `theme/color/background/primary-default`. Partial-success semantics: per-variable errors are surfaced in `applyResult.errors[]` without failing the batch.
+- **`tokens.config.json`** schema — JSON Schema-validated, autodiscovered by walking up from the cwd (same convention as `tsconfig.json`). Drives both tools so subsequent calls are zero-arg. Honors `source.dir`/`source.canonical`, `generated.dir`/`generated.formats[]`, `modes.map`, `conflictResolution`, and `sync` behavior flags.
+- **DTCG `$extensions["figma-console-mcp"]`** vendor metadata block on every exported token: `variableId`, `collectionId`, `lastSyncedValue` (per-mode snapshot for two-sided conflict detection), `lastSyncedAt`. Set-level: `originalName` (so slugified JSON keys round-trip to the original Figma collection name). Document-level: `figmaFileKey`, `exportedAt`, `mcpVersion`.
+- **CSS variables formatter** with mode-aware selectors: `Light` / `Default` → `:root`, `Dark` → `.dark` (matches Tailwind's `darkMode: 'class'` convention), other modes → `[data-theme="<slug>"]`. Composite typography expands into multiple primitive vars. Shadow composites render as standard CSS `box-shadow` strings.
+- **Order-independent diff comparison** in the import tool. Tokens that have the same mode values but different key insertion order (Figma returns collection-defined order, parsed JSON returns alphabetical) no longer surface as false-positive `toUpdate` entries.
+- **Cloud Mode safety guard.** The tools are registered identically in both Local and Cloud Mode entry points but detect their runtime environment via an `isRemoteMode` flag passed at registration. In Cloud Mode (Cloudflare Workers, no local filesystem), `configPath` autodiscovery, `outputPath` disk writes, and config-source file reads throw a structured `[figma-console-mcp]` error pointing the user at the inline-payload workaround — instead of cryptic `ENOENT`/"not implemented" errors. Inline-mode export and import both work in Cloud Mode because the apply phase routes through `executeCodeViaUI` (transport-agnostic).
+- **29 new Jest tests** under `tests/tokens.test.ts` covering: DTCG round-trip (single-mode, multi-mode, alias references, `$extensions` metadata, `splitByMode` recovery, deterministic key ordering, set-name slug round-trip), alias resolver (parse, resolve, cycle detection, unresolvable references), config loader (missing, valid, autodiscover, invalid JSON, schema validation), Figma converter (color, alias chains, collection/mode filtering, group `$type` inheritance), CSS variables formatter (primitives, aliases, dark mode convention, prefix, cross-library skip, multi-word font quoting, path slugification), Cloud Mode registration. Full suite: 1129 passing (was 1100).
+
+### Changed
+
+- **`scripts/release.sh`** extended to bump `MCP_VERSION` in `src/core/tokens-tools.ts` alongside the existing version stamps in `src/index.ts`, `figma-desktop-bridge/code.js`, and `docs/mint.json`. The auto-detected Cloud tool count now correctly includes the two new registrars (95 instead of 93).
+- **`/health` response** now reports v1.27.0.
+- **Plugin `PLUGIN_VERSION`** bumped to `1.27.0`. **Re-importing the plugin manifest is _optional_** — the wire protocol is unchanged from v1.26.0. Re-import only if you want the cosmetic plugin-version reporting in `figma_get_status` / `figma_diagnose` to read `1.27.0` instead of `1.26.0`.
+
+### Deferred to Phase 2
+
+- Remaining output formatters: `tokens-studio`, `tailwind-v4`, `tailwind-v3`, `scss`, `less`, `ts-module`, `json-flat`, `json-nested`, `style-dictionary-v3`. Each scaffolded — the dispatcher routes to the right module — but the serializers throw `TokenFormatNotImplementedError` with a clear message directing users to DTCG.
+- Remaining input parsers: same list as above plus `tailwind-v3-config`. Auto-detection of payload format works end-to-end for DTCG; non-DTCG formats throw with a clear "convert to DTCG first" message.
+- `toCreate` apply phase: diff plan returned but variable-creation orchestration not yet wired (`figma_setup_design_tokens` and `figma_batch_create_variables` remain the manual path for new variables).
+- `toDelete` apply phase: Figma-only tokens preserved by default under `merge`. `replace` strategy + delete-apply ships in a future minor version.
+- Alias updates in the apply phase: code-side `{color.primary}` references skip the update with a warning explaining the workaround. The Phase 2.5 fix needs `VARIABLE_ALIAS` target-ID resolution.
+- Cross-library variable resolution: pulling values for `{__library:VariableID:...}` references via the plugin's `figma.variables.getVariableByIdAsync` (a new bridge command), so cross-library aliases render as actual `var(--target-token)` references instead of skip-comments.
+
+
+## [1.26.0] - 2026-05-16
+
+Internal cleanup and clarity release. No new tools, no removed tools, no breaking argument-shape changes. Three things are different for users running multiple Figma-related MCPs side by side and one is different for anyone who'd set up the old CDP debug path.
+
+The headline change is that Local Mode no longer carries the Chrome DevTools Protocol / Puppeteer transport at all — the WebSocket Desktop Bridge plugin is the only Local path. Cloud Mode still uses Cloudflare's Browser Rendering API for `figma_navigate` / `figma_get_console_logs` / `figma_take_screenshot`; that path is unchanged.
+
+The second change is that every tool response now carries an `_mcp: "figma-console-mcp"` field, and every error message is prefixed `[figma-console-mcp]`. This came from a real user case where a misleading "API token expired" message from Figma's official MCP was confused for an error from this server. The identity wrap makes the source of each response unambiguous in any agent transcript that mixes multiple MCPs.
+
+The third change is a new tool, `figma_diagnose` — a designer-readable health check that reports mode, bridge state, PAT presence (without leaking the token), and disambiguation notes when other Figma MCPs are mounted alongside. Use it as the first call when a setup looks broken.
+
+### Added
+
+- **`figma_diagnose`** — single-call health check that returns structured status (mode, bridge connection, file context, transport, PAT state) plus designer-readable guidance. Registered in both Local and Cloud entry points (`src/core/diagnose-tool.ts`).
+- **Plugin status pill** — the Desktop Bridge plugin UI now shows transport-specific state: `Local · ready`, `Cloud · ready`, or `Local + Cloud · ready`, instead of the previous generic `MCP ready`. Falls back to `MCP` when no connection is active. Updated in `figma-desktop-bridge/ui.html`.
+- **MCP identity wrap** — every tool response carries a top-level `_mcp: "figma-console-mcp"` field; every thrown error is prefixed `[figma-console-mcp]`. Idempotent: re-tagging skips already-tagged payloads, preserves `isError`, leaves non-JSON content untouched (`src/core/identity.ts`).
+
+### Changed
+
+- **Local Mode is now WebSocket-only.** The `FigmaDesktopConnector` / Puppeteer / Chrome DevTools Protocol path has been removed entirely from Local Mode. All 101 Local Mode tools route through the WebSocket Desktop Bridge plugin on ports 9223–9232.
+- **`puppeteer-core` and `chrome-remote-interface`** dropped from `dependencies`. Cloud Mode continues to use `@cloudflare/puppeteer` for its Browser Rendering path; that's a separate dependency and is unchanged.
+- **30 write tools deduplicated** — the 30 inline write-tool registrations that were duplicated between `src/local.ts` and `src/core/write-tools.ts` are now defined in `write-tools.ts` only and consumed by both entry points via `registerWriteTools()`. Tool names, argument shapes, and return shapes are unchanged.
+- **`transport` field in console-tool responses** is now always `"websocket"` in Local Mode (was `"cdp" | "websocket"`). Cloud Mode continues to report `"cdp"` for its Browser Rendering path.
+- **`figma_navigate` description** rewritten to match current behavior. In Local Mode it switches the active file target among files that already have the Desktop Bridge plugin running; it does **not** launch a browser. In Cloud/Remote Mode it navigates the Cloudflare-hosted headless browser. Tool name and argument shape are unchanged.
+- **REST auth error messages** rephrased to show only the relevant remediation path. Local-mode errors no longer mention OAuth / pairing codes; Cloud-mode errors no longer mention `FIGMA_ACCESS_TOKEN`.
+- **`variablesCache` invalidation** — the cache now clears on plugin disconnect; previously a stale cache could survive a reconnect and shadow live data. Document-change events with no variable/style payload no longer blanket-clear the cache.
+- **Bootloader scaffolding removed.** `BOOT_LOAD_UI`, `BOOT_FALLBACK`, `GET_PLUGIN_UI`, and the `/plugin/ui` HTTP endpoint were dead code (never functioned at runtime) and have been deleted. The plugin loads `ui.html` directly from disk at plugin-open time.
+- **Documentation scrub** — every stale tool-count claim across `README.md`, `docs/`, `mint.json`, and `SECURITY.md` has been reconciled to the actual current counts (Local 101 / Cloud 93 / Remote 9). The release script's `auto_count_cloud` was extended to cover the four registrar files added since the script was written (`deep-component-tools.ts`, `version-tools.ts`, `accessibility-tools.ts`, `diagnose-tool.ts`), so future releases auto-detect correctly.
+- Plugin `PLUGIN_VERSION` bumped to `1.26.0`. **Re-importing the plugin manifest is _optional_ in this release.** The v1.25.0 plugin remains wire-compatible with the v1.26.0 server — every tool, every command, and every protocol message still works. Re-import only if you want the cosmetic updates (new transport-aware status pill: `Local · ready` / `Cloud · ready` / `Local + Cloud · ready`, accurate `pluginVersion` in `figma_get_status` / `figma_diagnose` output). Required re-imports will continue to be called out explicitly when they apply, as they were in v1.22.4 (Plugin API method additions) and v1.10.0 (multi-port scanning).
+
+### Removed
+
+- **`FIGMA_DEBUG_HOST` / `FIGMA_DEBUG_PORT`** environment variables are no longer read. They only ever fed the CDP path; anyone who set them in their MCP client config will see them silently ignored. No migration is needed — the plugin auto-discovers the WebSocket server on ports 9223–9232.
+- **`LocalModeConfig.debugHost` / `debugPort`** removed from `src/core/config.ts`.
+- **`useCDP` flag** and `transport: "cdp"` literal removed from Local Mode source. Cloud Mode is unaffected.
+- **`launch-figma-debug.sh` / `launch-figma-debug.ps1`** scripts deleted. They launched Figma with `--remote-debugging-port=9222` to expose CDP — a transport that no longer exists in Local Mode.
+- **`/test-browser` HTTP endpoint** removed from the Cloudflare entry point. No docs referenced it.
+- **`figma_get_variables` `parseFromConsole: true`** path removed. The cache → plugin → REST → styles resolution chain handles every case the old console-snippet workflow served; callers who passed `parseFromConsole: true` will now see an identified error.
+
+### Fixed
+
+- **Race condition in WebSocket grace-period timer** that could keep the Node process alive past `stop()`. Timer is now tracked and cleared in `stop()` and on new connections.
+- **Plugin status pill** correctly reads `activeConnections` via the global getter rather than the IIFE-scoped variable that wasn't reachable at render time.
+- **Cloud-only build** (`npm run build:local`) now succeeds without the pre-existing CDP-related TypeScript errors. The remaining pre-existing errors in `src/apps/*/ui/mcp-app.ts` (DOM types) are unchanged.
+
+
 ## [1.25.0] - 2026-05-13
 
 Description and Dev Mode annotation changes are now first-class citizens in `figma_diff_versions`. v1.23.0 introduced version diffs but Figma's REST API never returns COMPONENT_SET descriptions or annotations in version snapshots — meaning every description edit and every annotation edit was silently invisible to the diff engine. For design-system teams who rely on descriptions and annotations to communicate intent, this was the most important category of change being missed.
@@ -729,6 +827,9 @@ Connection health protocol — agents no longer need custom health-check logic t
 - Real-time Figma Desktop Bridge plugin
 - Support for both local (stdio) and Cloudflare Workers deployment
 
+[1.27.1]: https://github.com/southleft/figma-console-mcp/compare/v1.27.0...v1.27.1
+[1.27.0]: https://github.com/southleft/figma-console-mcp/compare/v1.26.0...v1.27.0
+[1.26.0]: https://github.com/southleft/figma-console-mcp/compare/v1.25.0...v1.26.0
 [1.25.0]: https://github.com/southleft/figma-console-mcp/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/southleft/figma-console-mcp/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/southleft/figma-console-mcp/compare/v1.22.4...v1.23.0

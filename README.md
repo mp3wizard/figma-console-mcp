@@ -6,21 +6,25 @@
 [![Documentation](https://img.shields.io/badge/docs-docs.figma--console--mcp.southleft.com-0D9488)](https://docs.figma-console-mcp.southleft.com)
 [![Sponsor](https://img.shields.io/badge/Sponsor-southleft-ea4aaa?logo=github-sponsors&logoColor=white)](https://github.com/sponsors/southleft)
 
-> **Your design system as an API.** Model Context Protocol server that bridges design and development—giving AI assistants complete access to Figma for **extraction**, **creation**, and **debugging**.
+> **Your design system as an API.** Model Context Protocol server that bridges design and development—giving AI assistants complete access to Figma for **extraction**, **creation**, **debugging**, and **bidirectional token sync**.
 
-> **🆕 Version History & Time-Series Awareness (v1.23.0):** Six new tools turn a Figma file from a static snapshot into a queryable history — list versions, snapshot any past version, diff two versions for component/binding deltas, generate markdown changelogs ready for release notes, and trace exactly when (and by whom) a property or variant was introduced via a binary-search blame walker. Author attribution flows from autosaves, not just labeled releases. [See what's new →](CHANGELOG.md#1230---2026-05-09)
+> **🆕 Bidirectional Token Sync (v1.27.0, patched v1.27.1):** Two new tools — `figma_export_tokens` and `figma_import_tokens` — replace Style Dictionary and Tokens Studio's export pipeline for popular styling methods. Pull every variable across every collection and mode as canonical DTCG JSON + CSS custom properties; edit a hex value in code; push the delta back to Figma. Diff-aware merge produces exactly one API call per changed value, not a full collection rewrite. 103 tools total. [See what's new →](CHANGELOG.md#1271---2026-05-16)
 
 ## What is this?
 
 Figma Console MCP connects AI assistants (like Claude) to Figma, enabling:
 
 - **🎨 Design system extraction** - Pull variables, components, and styles
+- **🔁 Bidirectional token sync** - Export Figma variables to DTCG JSON + CSS custom properties; push code-side edits back to Figma. Replaces Style Dictionary and Tokens Studio's export pipeline.
 - **📸 Visual debugging** - Take screenshots for context
 - **✏️ Design creation** - Create UI components, frames, and layouts directly in Figma
 - **🔧 Variable management** - Create, update, rename, and delete design tokens
+- **🕰 Version history & time-series awareness** - List versions, diff snapshots, generate markdown changelogs, trace property/variant introduction via binary-search blame
 - **⚡ Real-time monitoring** - Watch console logs from the Desktop Bridge plugin
 - **📌 FigJam boards** - Create stickies, flowcharts, tables, and code blocks on collaborative boards
+- **🎞️ Slides presentations** - Build and manage Figma Slides decks programmatically
 - **♿ Accessibility scanning** - 14 WCAG design checks with conformance level tagging, component scorecards, axe-core code scanning, design-to-code parity
+- **🛡 Cross-MCP identity** - Every tool response carries `_mcp: "figma-console-mcp"` and errors are prefixed `[figma-console-mcp]` so attribution stays unambiguous in agents running multiple Figma MCPs
 - **☁️ Cloud Write Relay** - Web AI clients (Claude.ai, v0, Replit) can design in Figma via cloud pairing
 - **🔄 Four ways to connect** - Remote SSE, Cloud Mode, NPX, or Local Git
 
@@ -51,9 +55,9 @@ Figma Console MCP connects AI assistants (like Claude) to Figma, enabling:
 | Real-time monitoring (console, selection) | ✅ | ❌ | ❌ |
 | Desktop Bridge plugin | ✅ | ✅ | ❌ |
 | Requires Node.js | Yes | **No** | No |
-| **Total tools available** | **100+** | **83** | **9** |
+| **Total tools available** | **103** | **93** | **9** |
 
-> **Bottom line:** Remote SSE is **read-only** with ~38% of the tools. **Cloud Mode** unlocks write access from web AI clients without Node.js. NPX/Local Git gives the full 100+ tools with real-time monitoring.
+> **Bottom line:** Remote SSE is **read-only** with ~38% of the tools. **Cloud Mode** unlocks write access from web AI clients without Node.js. NPX/Local Git gives the full 103 tools with real-time monitoring.
 
 ---
 
@@ -61,7 +65,7 @@ Figma Console MCP connects AI assistants (like Claude) to Figma, enabling:
 
 **Best for:** Designers who want full AI-assisted design capabilities.
 
-**What you get:** All 100+ tools including design creation, variable management, and component instantiation.
+**What you get:** All 103 tools including design creation, variable management, and component instantiation.
 
 #### Prerequisites
 
@@ -126,11 +130,13 @@ If you're not sure where to put the JSON configuration above, here's where each 
 1. Open Figma Desktop normally (no special flags needed) and open a file
 2. Go to **Plugins → Development → Import plugin from manifest...**
 3. Select `~/.figma-console-mcp/plugin/manifest.json` (stable path, auto-created by the MCP server)
-4. Run the plugin in your Figma file — the bootloader finds the MCP server and loads the latest UI automatically
+4. Run the plugin in your Figma file — it scans ports 9223–9232 and connects automatically to your running MCP server
 
-> One-time setup. The plugin uses a bootloader that dynamically loads fresh code from the MCP server — no need to re-import when the server updates.
-
-> **Upgrading from v1.14 or earlier?** Your existing plugin still works, but to get the bootloader benefits (no more re-importing), do one final re-import from `~/.figma-console-mcp/plugin/manifest.json`. The path is created automatically when the MCP server starts. Run `npx figma-console-mcp@latest --print-path` to see it. After this one-time upgrade, you're done forever.
+> **Heads-up on plugin updates.** Figma caches plugin files (`code.js` and `ui.html`) at the application level. The MCP server refreshes the files at `~/.figma-console-mcp/plugin/` on every startup, but Figma keeps using its cached copy until you re-import the manifest.
+>
+> **Re-importing is _required_ only when a release notes entry says so** — typically when the plugin adds a new method the server needs (e.g. v1.22.4, v1.10.0). For most upgrades the new server stays wire-compatible with the previous plugin, and re-importing is **optional**: you'll still get every functional change, just not the cosmetic plugin-side touches (status-pill copy, `pluginVersion` reporting).
+>
+> When you do re-import: Plugins → Manage plugins → re-import `~/.figma-console-mcp/plugin/manifest.json`. The stable path never changes, so it's a one-click step.
 
 #### Step 4: Restart Your MCP Client
 
@@ -156,7 +162,7 @@ Create a simple frame with a blue background
 
 **Best for:** Developers who want to modify source code or contribute to the project.
 
-**What you get:** Same 100+ tools as NPX, plus full source code access.
+**What you get:** Same 103 tools as NPX, plus full source code access.
 
 #### Quick Setup
 
@@ -245,7 +251,7 @@ Ready for design creation? Follow the [NPX Setup](#-npx-setup-recommended) guide
 
 **Best for:** Using Claude.ai, v0, Replit, or Lovable to create and modify Figma designs — no Node.js required.
 
-**What you get:** 83 tools including full write access — design creation, variable management, component instantiation, and all REST API tools. Only real-time monitoring (console logs, selection tracking, document changes) requires Local Mode.
+**What you get:** 95 tools including full write access — design creation, variable management, component instantiation, and all REST API tools. Only real-time monitoring (console logs, selection tracking, document changes) requires Local Mode.
 
 #### Prerequisites
 
@@ -302,7 +308,7 @@ AI Client → Cloud MCP Server → Durable Object Relay → Desktop Bridge Plugi
 | Feature | NPX (Recommended) | Cloud Mode | Local Git | Remote SSE |
 |---------|-------------------|------------|-----------|------------|
 | **Setup time** | ~10 minutes | ~5 minutes | ~15 minutes | ~2 minutes |
-| **Total tools** | **100+** | **83** | **100+** | **9** (read-only) |
+| **Total tools** | **103** | **93** | **103** | **9** (read-only) |
 | **Design creation** | ✅ | ✅ | ✅ | ❌ |
 | **Variable management** | ✅ | ✅ | ✅ | ❌ |
 | **Component instantiation** | ✅ | ✅ | ✅ | ❌ |
@@ -317,7 +323,7 @@ AI Client → Cloud MCP Server → Durable Object Relay → Desktop Bridge Plugi
 | **Automatic updates** | ✅ (`@latest`) | ✅ | Manual (`git pull`) | ✅ |
 | **Source code access** | ❌ | ❌ | ✅ | ❌ |
 
-> **Key insight:** Remote SSE is read-only. Cloud Mode adds write access for web AI clients without Node.js. NPX/Local Git give the full 100+ tools.
+> **Key insight:** Remote SSE is read-only. Cloud Mode adds write access for web AI clients without Node.js. NPX/Local Git give the full 103 tools.
 
 **📖 [Complete Feature Comparison](docs/mode-comparison.md)**
 
@@ -370,9 +376,11 @@ When you first use design system tools:
 
 ## 🛠️ Available Tools
 
-### Navigation & Status
-- `figma_navigate` - Open Figma URLs
-- `figma_get_status` - Check connection status
+### Status & Diagnostics
+- `figma_get_status` - Check WebSocket bridge connection and file context
+- `figma_diagnose` - Designer-readable health check + setup guidance
+- `figma_reconnect` - Force reconnect to the Desktop Bridge plugin
+- `figma_navigate` - Switch the active file target among connected plugins (Local), or navigate the cloud headless browser (Remote/Cloud)
 
 ### Console Debugging
 - `figma_get_console_logs` - Retrieve console logs
@@ -416,6 +424,10 @@ When you first use design system tools:
 ### 🔍 Design-Code Parity (All Modes)
 - `figma_check_design_parity` - Compare Figma component specs against code implementation, producing a scored diff report with actionable fix items
 - `figma_generate_component_doc` - Generate platform-agnostic markdown documentation by merging Figma design data with code-side info
+
+### 🔁 Token Sync (Local Mode + Cloud Mode)
+- `figma_export_tokens` - **Export Figma variables to design token files in your codebase.** Canonical DTCG JSON + CSS custom properties out of the box. Diff-aware merge against existing source files (only writes what changed). `tokens.config.json` autodiscovery means zero-arg calls after first setup. Replaces Style Dictionary and Tokens Studio's export pipeline for popular styling methods.
+- `figma_import_tokens` - **Push code-side token edits back to Figma.** Diff against current Figma state, apply only the deltas. Round-trip safe — Figma variable IDs preserved in DTCG `$extensions["figma-console-mcp"]` so renames on either side don't create duplicates. Dry-run default for safety. In Cloud Mode, pass tokens inline via `payload` or `files` (no local filesystem access).
 
 ### 🔧 Variable Management (Local Mode + Cloud Mode)
 - `figma_create_variable_collection` - Create new variable collections with modes
@@ -651,7 +663,7 @@ The **Figma Desktop Bridge** plugin is the recommended way to connect Figma to t
 - The MCP server communicates via **WebSocket** through the Desktop Bridge plugin
 - The server tries port 9223 first, then automatically falls back through ports 9224–9232 if needed
 - The plugin scans all ports in the range and connects to every active server it finds
-- All 100+ tools work through the WebSocket transport
+- All 103 tools work through the WebSocket transport
 
 **Multiple files:** The WebSocket server supports multiple simultaneous plugin connections — one per open Figma file. Each connection is tracked by file key with independent state (selection, document changes, console logs).
 
@@ -693,9 +705,11 @@ When two processes tried to start the MCP server (e.g., Claude Desktop's Chat ta
 
 **Nothing.** Multi-instance support is fully automatic:
 - Each MCP server claims the next available port in the range
-- The bootloader plugin scans all ports and connects to every active server
+- The Desktop Bridge plugin scans all ports and connects to every active server
 - Orphaned processes from closed tabs are automatically cleaned up on startup
-- No re-importing, no manual port management
+- No manual port management — the plugin already scans the whole range
+
+(Re-importing the manifest is only required when the plugin code itself changes — e.g. after a package update. Port-range scanning is already in the shipped plugin.)
 
 ---
 
@@ -788,27 +802,29 @@ The architecture supports adding new apps with minimal boilerplate — each app 
 
 ## 🛤️ Roadmap
 
-**Current Status:** v1.23.0 (Stable) - Production-ready with version history & time-series awareness, FigJam + Slides support, Cloud Write Relay, Design System Kit, WebSocket-only connectivity, smart multi-file tracking, 100+ tools, Comments API, and MCP Apps
+**Current Status:** v1.27.1 (Stable) - Production-ready with bidirectional Figma↔code token sync, version history & time-series awareness, FigJam + Slides support, Cloud Write Relay, Design System Kit, WebSocket-only connectivity, smart multi-file tracking, **103 tools** (Local) / **95 tools** (Cloud) / **9 tools** (Remote read-only), Comments API, cross-MCP identity disambiguation, and MCP Apps.
 
 **Recent Releases:**
-- [x] **v1.17.0** - Figma Slides Support: 15 new tools for managing presentations — slides, transitions, content, reordering, and navigation. Inspired by Toni Haidamous (PR #11).
-- [x] **v1.16.0** - FigJam Support: 9 new tools for creating and reading FigJam boards — stickies, flowcharts, tables, code blocks, and connection graphs. Community-contributed by klgral and lukemoderwell.
-- [x] **v1.12.0** - Cloud Write Relay: web AI clients (Claude.ai, v0, Replit, Lovable) can create and modify Figma designs via cloud relay pairing — no Node.js required
-- [x] **v1.11.2** - Screenshot fix: `figma_take_screenshot` works without explicit `nodeId` in WebSocket mode
-- [x] **v1.11.1** - Doc generator fixes: clean markdown tables, Storybook links, property metadata filtering
-- [x] **v1.11.0** - Complete CDP removal, improved multi-file active tracking with focus detection
-- [x] **v1.10.0** - Multi-instance support (dynamic port fallback 9223–9232, multi-connection plugin, instance discovery)
-- [x] **v1.9.0** - Figma Comments tools, improved port conflict detection
-- [x] **v1.8.0** - WebSocket Bridge transport (CDP-free connectivity), real-time selection/document tracking, `figma_get_selection` + `figma_get_design_changes` tools
-- [x] **v1.7.0** - MCP Apps (Token Browser, Design System Dashboard), batch variable operations, design-code parity tools
-- [x] **v1.5.0** - Node manipulation tools, component property management, component set arrangement
-- [x] **v1.3.0** - Design creation via `figma_execute`, variable CRUD operations
+- [x] **v1.27.1** - Documentation patch. No code behavior changes. Sweeps stale "Phase 1 ships with DTCG only" claims across tool descriptions, error messages, and internal comments after CSS variables formatter and the apply phase shipped during the v1.27.0 dev cycle. Refreshes README banner + capability bullets + roadmap. Adds `Phase 3.5: Stale-Content Audit` to the release runbook so future releases get a strict pre-publish grep sweep across banners, tool descriptions, error messages, source comments, and tool-count consistency.
+- [x] **v1.27.0** - Bidirectional token sync: `figma_export_tokens` + `figma_import_tokens` replace Style Dictionary and Tokens Studio's export pipeline. Canonical DTCG JSON + CSS custom properties. Diff-aware merge with round-trip ID preservation via `$extensions["figma-console-mcp"]`. Apply phase pushes hex-value edits back to Figma via the plugin bridge. Verified end-to-end against 713-token + 280-token design systems.
+- [x] **v1.26.0** - Internal cleanup + cross-MCP identity: Local-mode CDP/Puppeteer transport removed entirely (WebSocket-only). `figma_diagnose` tool for designer-readable health checks. Every response tagged `_mcp: "figma-console-mcp"`; errors prefixed `[figma-console-mcp]` so attribution is unambiguous when running multiple Figma MCPs. Plugin status pill now reads `Local · ready` / `Cloud · ready` / `Local + Cloud · ready`. Net diff: −7,299 lines, plugin re-import optional.
+- [x] **v1.25.0** - Description + Dev Mode annotation tracking in `figma_diff_versions` via plugin session buffer. Description and annotation edits made during a session now appear in diff output (REST API doesn't return these — bridged through the plugin's `documentchange` listener).
+- [x] **v1.24.0** - Honest scope coverage on version diffs. `scope_coverage` object surfaces what `figma_diff_versions` does and doesn't track; always-on coverage warnings prevent silent invisibility on token-value changes and component-instance placements.
+- [x] **v1.23.0** - Version History & Time-Series Awareness: 6 new tools (list versions, snapshot any past version, diff two versions for component/binding deltas, generate markdown changelogs, trace property/variant introduction via binary-search blame walker). Author attribution flows from autosaves, not just labeled releases.
+- [x] **v1.17.0** - Figma Slides support: 15 tools for managing presentations.
+- [x] **v1.16.0** - FigJam support: 9 tools for creating and reading FigJam boards.
+- [x] **v1.12.0** - Cloud Write Relay: web AI clients can create and modify Figma designs without Node.js.
+- [x] **v1.11.0** - Complete CDP removal, improved multi-file active tracking with focus detection.
+- [x] **v1.10.0** - Multi-instance support (dynamic port fallback 9223–9232, multi-connection plugin, instance discovery).
+- [x] **v1.9.0** - Figma Comments tools, improved port conflict detection.
+- [x] **v1.8.0** - WebSocket Bridge transport (CDP-free connectivity), real-time selection/document tracking.
+- [x] **v1.7.0** - MCP Apps (Token Browser, Design System Dashboard), batch variable operations, design-code parity tools.
 
 **Coming Next:**
+- [ ] **Token sync Phase 2** - Tailwind v4 `@theme`, SCSS, TypeScript module, Style Dictionary v3 source format, `toCreate` apply orchestration, `toDelete` for `replace` strategy, cross-library variable resolution via `getVariableByIdAsync`.
 - [ ] **Component template library** - Common UI pattern generation
 - [ ] **Visual regression testing** - Screenshot diff capabilities
 - [ ] **Design linting** - Automated compliance and accessibility checks
-- [ ] **AI enhancements** - Intelligent component suggestions and auto-layout optimization
 
 **📖 [Full Roadmap](docs/ROADMAP.md)**
 
