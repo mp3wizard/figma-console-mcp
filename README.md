@@ -85,7 +85,7 @@ Figma Console MCP connects AI assistants (like Claude) to Figma, enabling:
 
 **Claude Code (CLI):**
 ```bash
-claude mcp add figma-console -s user -e FIGMA_ACCESS_TOKEN=figd_YOUR_TOKEN_HERE -e ENABLE_MCP_APPS=true -- npx -y figma-console-mcp@latest
+claude mcp add figma-console -s user -e FIGMA_ACCESS_TOKEN=figd_YOUR_TOKEN_HERE -e ENABLE_MCP_APPS=true -- npx -y @mp3wizard/figma-console-mcp@latest
 ```
 
 **Cursor / Windsurf / Claude Desktop:**
@@ -97,7 +97,7 @@ Add to your MCP config file (see [Where to find your config file](#-where-to-fin
   "mcpServers": {
     "figma-console": {
       "command": "npx",
-      "args": ["-y", "figma-console-mcp@latest"],
+      "args": ["-y", "@mp3wizard/figma-console-mcp@latest"],
       "env": {
         "FIGMA_ACCESS_TOKEN": "figd_YOUR_TOKEN_HERE",
         "ENABLE_MCP_APPS": "true"
