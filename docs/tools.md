@@ -331,20 +331,20 @@ figma_export_tokens({
 })
 ```
 
-**Output formats (Phase 1):**
+**Output formats:**
 
-| Format | Status | Notes |
-|---|---|---|
-| `dtcg` | ✅ Phase 1 | W3C standard. Canonical. Round-trip safe via `$extensions["figma-console-mcp"]`. |
-| `css-vars` | ✅ Phase 1 | `:root { ... }` blocks with mode-aware selectors (`.dark`, `[data-theme="..."]`). |
-| `tokens-studio` | ⏳ Phase 2 | `$themes.json` + per-set files. |
-| `tailwind-v4` | ⏳ Phase 2 | `@theme inline { ... }` block. |
-| `tailwind-v3` | ⏳ Phase 2 | `theme.extend` object. |
-| `scss` | ⏳ Phase 2 | `$var: value;` |
-| `less` | ⏳ Phase 2 | `@var: value;` |
-| `ts-module` | ⏳ Phase 2 | TypeScript exports. |
-| `json-flat` / `json-nested` | ⏳ Phase 2 | Plain JSON for custom build scripts. |
-| `style-dictionary-v3` | ⏳ Phase 2 | Back-compat for existing SD users. |
+| Format | Notes |
+|---|---|
+| `dtcg` | W3C Design Tokens Community Group standard JSON. Canonical pivot format. Round-trip safe via `$extensions["figma-console-mcp"]` (Figma variable IDs preserved across sync). |
+| `css-vars` | CSS custom properties. `:root { ... }` blocks with mode-aware selectors (`.dark`, `[data-theme="..."]`). Composite typography expands to primitive vars. |
+| `tailwind-v4` | Tailwind v4 `@theme inline { ... }` block. Token-to-namespace mapping generates utility classes (`bg-primary`, `text-foreground`, `rounded-lg`, etc.). |
+| `tailwind-v3` | `module.exports = { colors: ... }` grouped under Tailwind v3 theme keys (`colors`, `spacing`, `fontFamily`, `borderRadius`). Spread into `tailwind.config.js`'s `theme.extend`. |
+| `scss` | `$var: value;` SCSS variables. Multi-mode tokens emit a primary `$var` plus a `$var--modes` SCSS map for runtime `map-get` access. |
+| `ts-module` | `export const tokens = { ... } as const` with derived `type Tokens = typeof tokens`. Multi-mode tokens emit as `{ Light: ..., Dark: ... }` objects. |
+| `json-flat` | Flat key-value JSON (`{"ds-color-primary": "#4085F2"}`). Non-primary modes get a `--<mode>` suffix on keys. For custom build scripts. |
+| `json-nested` | Nested object JSON mirroring the token path tree. Multi-mode tokens emit as mode-keyed sub-objects. Alphabetical key ordering. |
+| `style-dictionary-v3` | Style Dictionary v3 bare-key source format (`{value, type, comment}` — no `$` prefix). Back-compat for existing SD users. |
+| `tokens-studio` | Tokens Studio for Figma's multi-file layout: `$themes.json` + `$metadata.json` + per-set files (e.g. `theme/light.json`, `theme/dark.json`). Preserves Figma collection/mode bindings for round-trip with the TS plugin. |
 
 **Diff-aware merge:** Default `strategy: "merge"` only writes files whose content actually changed. Use `strategy: "dry-run"` to preview without writing. Use `strategy: "replace"` to wipe and rewrite.
 
@@ -392,10 +392,10 @@ figma_import_tokens({
 
 **Conflict handling:** When both Figma and code changed the same token since the last sync, `onConflict: "ask"` (default) surfaces the conflict and writes nothing. Use `"figma-wins"` / `"code-wins"` to auto-resolve, or `"skip"` to leave conflicts alone and proceed with the rest.
 
-**What gets applied in Phase 1:**
+**What the apply phase actually does today:**
 
 - ✅ `toUpdate` (value changes on existing variables): applied via the plugin's `executeCodeViaUI` → `figma.variables.setValueForMode`. Multi-mode supported. Partial-success semantics — per-variable errors don't fail the batch, results returned in `applyResult.errors[]`.
-- ⏳ `toCreate` (new variables): diff plan returned, apply orchestration ships in a future phase. Use `figma_setup_design_tokens` or `figma_batch_create_variables` manually.
+- ⏳ `toCreate` (new variables): diff plan returned, apply orchestration not yet wired. Use `figma_setup_design_tokens` or `figma_batch_create_variables` manually for now.
 - ⏳ `toDelete` (Figma-only variables): preserved by default per the `merge` strategy. `figma_delete_variable` available for manual deletion.
 - ⏳ Alias updates (code-side `{color.primary}` references): skipped with a warning explaining the workaround (edit the alias target's value, or hard-code a literal).
 
