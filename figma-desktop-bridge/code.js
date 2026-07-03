@@ -6,7 +6,7 @@
 
 // Plugin version — sent in FILE_INFO for server-side version compatibility checks.
 // The server compares this against its own version to detect stale cached plugins.
-var PLUGIN_VERSION = '1.32.1'; // Kept in sync with package.json by scripts/release.sh — see issue #62.
+var PLUGIN_VERSION = '1.33.0'; // Kept in sync with package.json by scripts/release.sh — see issue #62.
 
 console.log('🌉 [Desktop Bridge] Plugin loaded (v' + PLUGIN_VERSION + ')');
 
@@ -146,6 +146,23 @@ var __stickyColors = {
       error: error.message || String(error)
     });
   }
+})();
+
+// Restore persisted cloud pairing config (stored via STORE_CLOUD_CONFIG) and
+// push it to the UI so cloud users don't lose their pairing on plugin reopen.
+// Fire-and-forget: never blocks the FILE_INFO/VARIABLES_DATA pushes above.
+(function() {
+  figma.clientStorage.getAsync('cloudConfig')
+    .then(function(stored) {
+      // Skip if nothing stored or the shape is unusable (e.g., cleared config)
+      if (!stored || !stored.code) return;
+      figma.ui.postMessage({ type: 'CLOUD_CONFIG_RESTORED', config: stored });
+      console.log('🌉 [Desktop Bridge] Restored cloud config from clientStorage');
+    })
+    .catch(function(error) {
+      // clientStorage can throw — non-critical, just log
+      console.warn('🌉 [Desktop Bridge] Could not restore cloud config:', error && error.message ? error.message : String(error));
+    });
 })();
 
 // Helper function to serialize a variable for response
@@ -354,6 +371,32 @@ async function loadFontsForNode(node) {
   for (var k = 0; k < fonts.length; k++) {
     try { await figma.loadFontAsync(fonts[k]); } catch (e) { /* skip unavailable */ }
   }
+}
+
+// Resolve a caller-supplied component property name against the instance's
+// actual property keys. TEXT/BOOLEAN/INSTANCE_SWAP property names carry a
+// #nodeId suffix (e.g. "title#2605:17"), so a bare "title" from the caller
+// must be mapped to the suffixed key. Resolution tiers:
+//   1. Exact match (covers VARIANT props and fully-suffixed names)
+//   2. Base name before '#' matches exactly
+//   3. Case-insensitive base-name match
+// Returns the resolved key, or null if nothing matches.
+function resolvePropertyName(currentProps, name) {
+  if (!currentProps || !name) return null;
+  if (currentProps[name] !== undefined) return name;
+  var existingProp;
+  for (existingProp in currentProps) {
+    if (currentProps.hasOwnProperty(existingProp) && existingProp.split('#')[0] === name) {
+      return existingProp;
+    }
+  }
+  var lowerName = String(name).toLowerCase();
+  for (existingProp in currentProps) {
+    if (currentProps.hasOwnProperty(existingProp) && existingProp.split('#')[0].toLowerCase() === lowerName) {
+      return existingProp;
+    }
+  }
+  return null;
 }
 
 // Listen for requests from UI (e.g., component data requests, write operations)
@@ -1904,12 +1947,19 @@ figma.ui.onmessage = async (msg) => {
       // Track failures so they surface in the result instead of failing silently.
       var overrideWarnings = [];
 
-      // Apply property overrides
+      // Apply property overrides. Property keys on the instance carry #nodeId
+      // suffixes ("title#2605:17"), so resolve the caller's bare name first —
+      // otherwise setProperties throws "Could not find a component property".
       if (msg.overrides) {
+        var instanceProps = {};
+        try { instanceProps = instance.componentProperties || {}; } catch (e) { instanceProps = {}; }
         for (var propName in msg.overrides) {
           if (msg.overrides.hasOwnProperty(propName)) {
+            var resolvedName = resolvePropertyName(instanceProps, propName);
             try {
-              instance.setProperties({ [propName]: msg.overrides[propName] });
+              var propsObj = {};
+              propsObj[resolvedName || propName] = msg.overrides[propName];
+              instance.setProperties(propsObj);
             } catch (propError) {
               var pMsg = propError && propError.message ? propError.message : String(propError);
               console.warn('🌉 [Desktop Bridge] Could not set property ' + propName + ':', pMsg);
@@ -1935,6 +1985,8 @@ figma.ui.onmessage = async (msg) => {
         var parent = await figma.getNodeByIdAsync(msg.parentId);
         if (parent && 'appendChild' in parent) {
           parent.appendChild(instance);
+        } else {
+          overrideWarnings.push('parentId "' + msg.parentId + '" not found or cannot accept children; instance placed on current page');
         }
       }
 
@@ -2556,14 +2608,23 @@ figma.ui.onmessage = async (msg) => {
       var nodeIds = msg.nodeIds || (msg.nodeId ? [msg.nodeId] : []);
       var updatedCount = 0;
       var updatedNodes = [];
+      var skipWarnings = [];
 
       for (var i = 0; i < nodeIds.length; i++) {
         var node = await figma.getNodeByIdAsync(nodeIds[i]);
-        if (node && 'fills' in node) {
+        if (!node) {
+          skipWarnings.push('node "' + nodeIds[i] + '" not found');
+        } else if (!('fills' in node)) {
+          skipWarnings.push('node "' + nodeIds[i] + '" (' + node.type + ') does not support fills');
+        } else {
           node.fills = [fill];
           updatedCount++;
           updatedNodes.push({ id: node.id, name: node.name });
         }
+      }
+
+      if (updatedCount === 0 && nodeIds.length > 0) {
+        throw new Error('Image fill applied to 0 node(s): ' + skipWarnings.join('; '));
       }
 
       console.log('🌉 [Desktop Bridge] Image fill applied to', updatedCount, 'node(s), hash:', imageHash);
@@ -2574,7 +2635,8 @@ figma.ui.onmessage = async (msg) => {
         success: true,
         imageHash: imageHash,
         updatedCount: updatedCount,
-        nodes: updatedNodes
+        nodes: updatedNodes,
+        warnings: skipWarnings.length ? skipWarnings : undefined
       });
 
     } catch (error) {
@@ -2968,8 +3030,10 @@ figma.ui.onmessage = async (msg) => {
       if (props.name) newNode.name = props.name;
       if (props.x !== undefined) newNode.x = props.x;
       if (props.y !== undefined) newNode.y = props.y;
-      if (props.width !== undefined && props.height !== undefined) {
-        newNode.resize(props.width, props.height);
+      if (props.width !== undefined || props.height !== undefined) {
+        var resizeWidth = props.width !== undefined ? props.width : newNode.width;
+        var resizeHeight = props.height !== undefined ? props.height : newNode.height;
+        newNode.resize(resizeWidth, resizeHeight);
       }
 
       // Apply fills if specified
@@ -3293,35 +3357,34 @@ figma.ui.onmessage = async (msg) => {
       // VARIANT properties use just "PropertyName"
       var propsToSet = {};
       var propUpdates = msg.properties || {};
+      var propWarnings = [];
+      var hasTextProp = false;
 
       for (var propName in propUpdates) {
+        if (!propUpdates.hasOwnProperty(propName)) continue;
         var newValue = propUpdates[propName];
+        var resolvedName = resolvePropertyName(currentProps, propName);
 
-        // Check if this exact property name exists
-        if (currentProps[propName] !== undefined) {
-          propsToSet[propName] = newValue;
-          console.log('🌉 [Desktop Bridge] Setting property:', propName, '=', newValue);
+        if (resolvedName !== null) {
+          propsToSet[resolvedName] = newValue;
+          if (currentProps[resolvedName] && currentProps[resolvedName].type === 'TEXT') {
+            hasTextProp = true;
+          }
+          console.log('🌉 [Desktop Bridge] Setting property:', resolvedName, '=', newValue);
         } else {
-          // Try to find a matching property with a suffix (for TEXT/BOOLEAN/INSTANCE_SWAP)
-          var foundMatch = false;
-          for (var existingProp in currentProps) {
-            // Check if this is the base property name with a node ID suffix
-            if (existingProp.startsWith(propName + '#')) {
-              propsToSet[existingProp] = newValue;
-              console.log('🌉 [Desktop Bridge] Found suffixed property:', existingProp, '=', newValue);
-              foundMatch = true;
-              break;
-            }
-          }
-
-          if (!foundMatch) {
-            console.warn('🌉 [Desktop Bridge] Property not found:', propName, '- Available:', Object.keys(currentProps).join(', '));
-          }
+          console.warn('🌉 [Desktop Bridge] Property not found:', propName, '- Available:', Object.keys(currentProps).join(', '));
+          propWarnings.push('property "' + propName + '" not found; available: ' + Object.keys(currentProps).join(', '));
         }
       }
 
       if (Object.keys(propsToSet).length === 0) {
         throw new Error('No valid properties to set. Available properties: ' + Object.keys(currentProps).join(', '));
+      }
+
+      // Pre-load fonts before applying TEXT-property values. Mutating text
+      // content in dynamic-page mode throws unless fonts are already loaded.
+      if (hasTextProp) {
+        await loadFontsForNode(node);
       }
 
       // Apply the properties
@@ -3348,7 +3411,8 @@ figma.ui.onmessage = async (msg) => {
             };
             return acc;
           }, {})
-        }
+        },
+        warnings: propWarnings.length ? propWarnings : undefined
       });
 
     } catch (error) {

@@ -55,6 +55,10 @@ export interface ConnectedFileInfo {
   currentPageId?: string;
   editorType?: 'figma' | 'figjam' | 'dev';
   connectedAt: number;
+  /** Version reported by the imported plugin's code.js (FILE_INFO). Null when the plugin predates version reporting. */
+  pluginVersion?: string | null;
+  /** True when the imported plugin's version differs from this server's — the user should re-import manifest.json. */
+  pluginUpdateAvailable?: boolean;
 }
 
 export interface SelectionInfo {
@@ -213,11 +217,13 @@ export class FigmaWebSocketServer extends EventEmitter {
             // Mitigate Cross-Site WebSocket Hijacking (CSWSH):
             // Reject connections from unexpected browser origins.
             const origin = info.origin;
+            // Exact match only — startsWith would let e.g.
+            // https://www.figma.com.attacker.example through.
             const allowed =
               !origin ||                           // No origin — local process (e.g. Node.js client)
               origin === 'null' ||                  // Sandboxed iframe / Figma Desktop plugin UI
-              origin.startsWith('https://www.figma.com') ||
-              origin.startsWith('https://figma.com');
+              origin === 'https://www.figma.com' ||
+              origin === 'https://figma.com';
             if (allowed) {
               callback(true);
             } else {
@@ -348,15 +354,39 @@ export class FigmaWebSocketServer extends EventEmitter {
     // Response to a command we sent
     if (message.id && this.pendingRequests.has(message.id)) {
       const pending = this.pendingRequests.get(message.id)!;
-      clearTimeout(pending.timeoutId);
-      this.pendingRequests.delete(message.id);
 
-      if (message.error) {
-        pending.reject(new Error(message.error));
+      // Verify the response arrived on the socket belonging to the file the
+      // command targeted — a matching id alone must not let a different
+      // client resolve (or spoof) another file's request.
+      const sender = this.findClientByWs(ws);
+      const socketVerified = sender
+        ? sender.fileKey === pending.targetFileKey
+        // Pre-identification socket (no FILE_INFO yet): only safe when it is
+        // unambiguous — exactly one socket connected to the server at all.
+        : (this.wss?.clients.size ?? 0) === 1;
+
+      if (!socketVerified) {
+        logger.warn(
+          {
+            id: message.id,
+            method: pending.method,
+            senderFileKey: sender?.fileKey ?? null,
+            targetFileKey: pending.targetFileKey,
+          },
+          'Ignoring response from unexpected socket (id matched, sender did not) — treating as unsolicited'
+        );
+        // Leave the pending request in place; fall through to unsolicited handling.
       } else {
-        pending.resolve(message.result);
+        clearTimeout(pending.timeoutId);
+        this.pendingRequests.delete(message.id);
+
+        if (message.error) {
+          pending.reject(new Error(message.error));
+        } else {
+          pending.resolve(message.result);
+        }
+        return;
       }
-      return;
     }
 
     // Unsolicited data from plugin (FILE_INFO, events, forwarded data)
@@ -493,10 +523,18 @@ export class FigmaWebSocketServer extends EventEmitter {
       if (this._activeFileKey === previousEntry.fileKey) {
         this._activeFileKey = null;
       }
+      // In-flight commands to the old file can never receive a response now —
+      // reject them immediately instead of leaving them to hang until timeout
+      // (mirrors the same-file replacement path below).
+      this.rejectPendingRequestsForFile(previousEntry.fileKey, 'Plugin switched files');
       logger.info(
         { oldFileKey: previousEntry.fileKey, newFileKey: fileKey },
         'WebSocket client switched files'
       );
+      this.emit('fileDisconnected', {
+        fileKey: previousEntry.fileKey,
+        fileName: previousEntry.client.fileInfo.fileName,
+      });
     }
 
     // If same fileKey already connected with a DIFFERENT ws, clean up old connection
@@ -515,6 +553,31 @@ export class FigmaWebSocketServer extends EventEmitter {
       }
     }
 
+    // Version handshake: the plugin reports its code.js version in FILE_INFO.
+    // Figma caches plugin files at the app level, so a version mismatch means
+    // the user is running stale plugin code and must re-import manifest.json.
+    // A missing version means the plugin predates version reporting — also stale.
+    const pluginVersion: string | null = data.pluginVersion || null;
+    const pluginUpdateAvailable =
+      !pluginVersion || pluginVersion !== SERVER_VERSION;
+    if (pluginUpdateAvailable) {
+      logger.warn(
+        { fileKey, pluginVersion, serverVersion: SERVER_VERSION },
+        'Imported plugin version differs from server — re-import manifest.json to update'
+      );
+      try {
+        ws.send(
+          JSON.stringify({
+            type: 'PLUGIN_UPDATE_AVAILABLE',
+            serverVersion: SERVER_VERSION,
+            pluginVersion,
+          })
+        );
+      } catch {
+        // Non-critical notification — never let it disrupt registration
+      }
+    }
+
     // Create client connection (preserve per-file state from previous connection of same file)
     this.clients.set(fileKey, {
       ws,
@@ -525,6 +588,8 @@ export class FigmaWebSocketServer extends EventEmitter {
         currentPageId: data.currentPageId || null,
         editorType: data.editorType || 'figma',
         connectedAt: Date.now(),
+        pluginVersion,
+        pluginUpdateAvailable,
       },
       selection: existing?.selection || null,
       documentChanges: existing?.documentChanges || [],
