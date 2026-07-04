@@ -103,6 +103,15 @@ export interface TokenValue {
     | TransitionValue
     | Record<string, unknown>;
   reference?: string;
+  /**
+   * TRANSIENT — full-precision Figma rgba floats (0–1) carried alongside the
+   * hex-string literal for COLOR tokens. The DTCG 2025.10 dialect emits
+   * `components` from these floats instead of round-tripping through the
+   * 8-bit-quantized hex. Set only by the Figma converter; never serialized
+   * into output (formatters read it at render time, and lastSyncedValue /
+   * diff samples strip it via stripRawColorFromValues).
+   */
+  rawColor?: { r: number; g: number; b: number; a: number };
 }
 
 /**
@@ -137,6 +146,21 @@ export interface FigmaMcpExtensions {
    * variables whose value can't be represented as a DTCG cubicBezier.
    */
   spring?: Record<string, unknown>;
+  /**
+   * Figma variable scopes (e.g. ["FILL_COLOR", "STROKE_COLOR"]). OMITTED
+   * when the variable has the default scoping (["ALL_SCOPES"] or empty) so
+   * legacy output stays byte-identical. Import semantics: an absent field
+   * means "no opinion" (never resets Figma-side scopes); an explicit
+   * ["ALL_SCOPES"] resets to the default.
+   */
+  scopes?: string[];
+  /**
+   * Figma per-platform code syntax (e.g. { WEB: "var(--color-primary)" }).
+   * OMITTED when empty. Import semantics: an absent field means "no
+   * opinion"; a present object is authoritative — platforms missing from it
+   * are removed via removeVariableCodeSyntax on apply.
+   */
+  codeSyntax?: Record<string, string>;
   /**
    * Formatter/parser round-trip markers (transient — written into DTCG
    * output by the formatter, absorbed and stripped by the parser):

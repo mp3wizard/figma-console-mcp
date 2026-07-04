@@ -5,6 +5,57 @@ All notable changes to Figma Console MCP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.34.0] - 2026-07-03
+
+### Added
+
+- **Full bidirectional token sync** — `figma_import_tokens` now applies the complete diff plan, not just value updates:
+  - **Creates**: missing variable collections are created with their full mode lists; missing variables are created with inferred or round-trip-recorded types, values set across all modes in dependency order (variables first, alias values in a second pass so targets exist). TIMING/EASING tokens are skipped with a clear warning — the Plugin API cannot create those types.
+  - **Alias re-targeting**: reference values now write real `{ type: "VARIABLE_ALIAS", id }` payloads. Resolver priority: just-created variable → live Figma snapshot → pending in this batch → recorded `$extensions` variable ID. Unresolvable references keep the previous skip-with-warning behavior.
+  - **Deletes**: strictly gated behind `strategy: "replace"` and announced loudly in the response. `merge` remains reporting-only.
+  - Per-item error isolation throughout — one bad token surfaces in `applyResult.errors[]` without failing the batch.
+- **DTCG 2025.10 dialect support** (`dtcgDialect: "2025"` on `figma_export_tokens`) — object-form colors (`{ colorSpace: "srgb", components, alpha, hex }` built from Figma's full-precision floats, not re-derived from quantized hex) and object dimensions (`{ value, unit: "px" }`) for Style Dictionary v5+ toolchains. **The default remains `"legacy"` (hex-string colors) and is byte-identical to prior releases** — existing consumers are unaffected.
+- **Import accepts both DTCG dialects unconditionally** — 2025.10 color objects (srgb components directly; non-srgb color spaces via their `hex` fallback), dimension/duration objects. Diff normalization treats `{ value: 16, unit: "px" }` as equal to `16` and object colors as equal to their hex equivalents (8-bit quantization tolerance), so mixed-dialect token files no longer report every token as changed.
+- **`scopes` and `codeSyntax` round-trip** — variable scopes (omitted when default/`ALL_SCOPES`) and per-platform code syntax now stash into `$extensions["figma-console-mcp"]` on export, are compared by the import diff (order-insensitive scopes; a code-side absent field means "no opinion" and never resets Figma metadata), and are written on apply — including on newly created variables. Eliminates the export-diff false-positive class for metadata-bearing design systems.
+- **Alias values in `figma_setup_design_tokens`** — values accept DTCG brace references (`"{color.blue.600}"`, set-qualified forms too), resolved plugin-side via `createVariableAlias` against both same-call and existing variables. Forward references within one call resolve (two-pass create-then-apply). Semantic collections no longer require raw `figma_execute` scripting.
+- **`figma_create_component_set`** — declarative one-call component-set creation from a variant axes matrix (e.g. `{ State: ["default", "hover", "disabled"], Size: ["sm", "lg"] }`): builds all combination variants with `Prop=Value` naming, combines via `combineAsVariants`, arranges with the in-place grid, and returns variant keys ready for instantiation. Replaces the DIY `figma_execute` + `combineAsVariants` pattern.
+
+### Changed
+
+- `figma_import_tokens` tool description rewritten to reflect the fully wired apply phase (creates, alias writes, replace-gated deletes) — the "not yet wired / use manual tools" guidance is gone.
+- `figma_export_tokens` documents the `dtcgDialect` option: legacy (default) for maximum compatibility (Style Dictionary v4, Tokens Studio); 2025 for DTCG 2025.10 object forms (Style Dictionary v5+).
+
+### Fixed
+
+- Importing a DTCG 2025.10 token file no longer mangles color values into `"[object Object]"` string writes.
+- **Rename safety**: the import diff now matches by round-trip variable ID *before* token path, so a token-path rename routes to the update phase as a name change instead of a create+delete pair. Under `strategy: "replace"`, the old behavior would have permanently deleted the original variable and detached all its node bindings.
+- **Malformed-color guards**: color strings the converter can't parse (`rgb(...)`, named colors like `salmon`, `transparent`) now become a per-value skip-invalid instead of throwing mid-apply after Figma was already mutated, and hex parsing validates digits so named colors can no longer produce NaN color channels.
+- **Seconds→milliseconds write unification**: `{ value: 0.5, unit: "s" }` now writes `500` on apply, matching the diff's canonicalization — previously the raw `0.5` was written, producing a permanent 1000× diff loop.
+- **Component-set timeout scaling + Mode B rollback**: the `CREATE_COMPONENT_SET` timeout scales with variant count at all three hops (server, `ui.html` relay, connector) so a timeout report can't contradict actual file state, with size guidance and a warning above ~40 variants. Mode B (`componentIds`) validates `=`/`,` in variant keys *and* values, and a unified rollback restores user components' original names on any pre-combine failure.
+
+> **⚠️ Plugin re-import required**: `figma-desktop-bridge/code.js` and `ui.html` changed in this release (the `figma_create_component_set` handler and relay). Re-import via Figma Desktop → Plugins → Development → Import plugin from manifest. The in-plugin update banner (v1.33.2+) will remind connected users automatically.
+
+
+## [1.33.2] - 2026-07-03
+
+Fixes the false "plugin update available" banner introduced by the v1.33.0 version handshake. No new tools, and no plugin re-import required — this release exists so you *stop* being asked to re-import.
+
+### Fixed
+
+- **Version handshake false positive on server-only releases.** The FILE_INFO handshake compared the plugin's reported version against the server's *package* version with strict `!==`, so a deps-only release like v1.33.1 flagged every up-to-date plugin as stale and pushed the re-import banner — even though re-importing would install byte-identical files. The server now parses the `PLUGIN_VERSION` constant out of the `figma-desktop-bridge/code.js` it actually ships and compares against that (i.e., the version a re-import would install). `figma_get_status` reports the new `transport.websocket.bundledPluginVersion` field, and `figma_diagnose` attributes a mismatch to the bundled plugin files rather than the server version. If parsing ever fails, the handshake falls back to the previous behavior.
+- **`PLUGIN_VERSION` semantics redefined.** The in-plugin constant now means "last release in which plugin files changed" and may intentionally lag `package.json` (it must never exceed it — enforced by tests). `scripts/release.sh` bumps it only when `figma-desktop-bridge/` actually changed since the last release tag, using `git diff -I` to ignore the constant line itself and comment-only edits so a prior bump can't masquerade as a plugin change. The constant was reverted from 1.33.1 to 1.33.0 because the only plugin diff in v1.33.1 *was* the version stamp. One-time caveat: if you already re-imported at v1.33.1, the banner shows once more; re-import once and it stays quiet. 1245 tests passing (9 new, including an end-to-end handshake regression for the exact 1.33.0-plugin/1.33.1-server pairing).
+
+
+## [1.33.1] - 2026-07-02
+
+Security-focused dependency sweep, same-day follow-up to v1.33.0. No code changes, no API changes, no plugin behavior changes. Nothing breaks on an un-updated plugin — but note the v1.33.0 version handshake will show the plugin's update banner (the version stamp moved to 1.33.1); re-import when convenient to clear it.
+
+### Fixed
+
+- **All runtime and critical security alerts resolved via in-range dependency bumps** (`npm audit fix`, no `--force`): `ws` 8.21.0, `hono` 4.12.27, `undici` 7.28.0, `handlebars` 4.7.9 (the lone critical, a dev-only transitive of ts-jest), plus `lodash`, `path-to-regexp`, `basic-ftp`, `fast-uri`, `vite`, and friends. Every bump is within existing semver ranges — 1236 tests pass unchanged and the Cloudflare deploy dry-run is clean. Supersedes dependabot PRs #81, #82, and #84.
+- **`wrangler` deliberately pinned at 4.72.0.** Newer wrangler requires Node ≥22 and would break deploys on Node 20 toolchains. The only remaining audit findings are confined to wrangler/miniflare's bundled dev-time toolchain — they are not part of the published npm package or the deployed Worker bundle, and they clear whenever the Node 22 upgrade lands.
+
+
 ## [1.33.0] - 2026-07-02
 
 Two bodies of work that shipped together because they answer the same complaint from opposite ends: a **full-codebase audit** (33 verified fixes across the token pipeline, REST/Bridge tooling, and connection lifecycle — every finding reproduced against live code paths before fixing) and a **Desktop Bridge connection UX overhaul** that makes the plugin's status display tell the truth and the connection heal itself. Plus follow-ups from an independent Copilot review of the release branch. 1236 tests passing (33 new).
@@ -1049,6 +1100,9 @@ Connection health protocol — agents no longer need custom health-check logic t
 - Real-time Figma Desktop Bridge plugin
 - Support for both local (stdio) and Cloudflare Workers deployment
 
+[1.34.0]: https://github.com/southleft/figma-console-mcp/compare/v1.33.2...v1.34.0
+[1.33.2]: https://github.com/southleft/figma-console-mcp/compare/v1.33.1...v1.33.2
+[1.33.1]: https://github.com/southleft/figma-console-mcp/compare/v1.33.0...v1.33.1
 [1.33.0]: https://github.com/southleft/figma-console-mcp/compare/v1.32.1...v1.33.0
 [1.32.1]: https://github.com/southleft/figma-console-mcp/compare/v1.32.0...v1.32.1
 [1.32.0]: https://github.com/southleft/figma-console-mcp/compare/v1.31.0...v1.32.0

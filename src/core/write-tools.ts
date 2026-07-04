@@ -939,7 +939,7 @@ return {
 	// Tool: Setup design tokens (collection + modes + variables atomically)
 	server.tool(
 		"figma_setup_design_tokens",
-		"Create a complete design token structure in one operation: collection, modes, and all variables. Ideal for importing CSS custom properties or design tokens into Figma. Requires Desktop Bridge plugin.",
+		"Create a complete design token structure in one operation: collection, modes, and all variables. Ideal for importing CSS custom properties or design tokens into Figma. Values may be literals OR DTCG-style brace references ('{color.blue.600}', or set-qualified '{primitives.color.blue.600}') that resolve to variable ALIASES — first against variables created in this same call, then against existing local variables. Unresolvable references skip that value with a per-item warning (the rest of the batch still applies), so semantic collections referencing primitives no longer need raw figma_execute. Requires Desktop Bridge plugin.",
 		{
 			collectionName: z
 				.string()
@@ -970,7 +970,7 @@ return {
 								z.union([z.string(), z.number(), z.boolean()]),
 							)
 							.describe(
-								"Values keyed by mode NAME (not ID). Example: { 'Light': '#FFFFFF', 'Dark': '#000000' }",
+								"Values keyed by mode NAME (not ID). Example: { 'Light': '#FFFFFF', 'Dark': '#000000' }. A string value wrapped in braces is an ALIAS reference resolved to another variable: '{color.blue.600}' matches variable name 'color/blue/600' — first among variables created in THIS call, then existing local variables (exact match, then case-insensitive). Set-qualified references ('{primitives.color.blue.600}') strip the leading collection name. Unresolvable references skip that value and surface in the response's warnings[].",
 							),
 					}),
 				)
@@ -1012,21 +1012,119 @@ for (let i = 1; i < modeNames.length; i++) {
   modeMap[modeNames[i]] = newModeId;
 }
 
-// Step 3: Create all variables with values
+// Step 3: Create all variables FIRST (values apply in a second pass so
+// brace-reference values can alias variables created later in this call).
 const results = [];
+const warnings = [];
+const resultByName = {};       // ONE results entry per token name — value-phase
+                               // problems attach to it as valueErrors instead of
+                               // pushing extra entries (which inflated created+failed
+                               // past the token count).
+const createdByName = {};      // exact name -> variable (this call)
+const createdByLower = {};     // lowercased name -> variable (this call)
+const createdDefs = [];        // { def, variable } for the value pass
 for (const t of tokenDefs) {
   try {
     const variable = figma.variables.createVariable(t.name, collection, t.resolvedType);
     if (t.description) variable.description = t.description;
-    for (const [modeName, value] of Object.entries(t.values)) {
-      const modeId = modeMap[modeName];
-      if (!modeId) { results.push({ success: false, name: t.name, error: 'Unknown mode: ' + modeName }); continue; }
-      const processed = t.resolvedType === 'COLOR' && typeof value === 'string' ? hexToRgba(value) : value;
-      variable.setValueForMode(modeId, processed);
-    }
-    results.push({ success: true, name: t.name, id: variable.id });
+    createdByName[t.name] = variable;
+    createdByLower[t.name.toLowerCase()] = variable;
+    createdDefs.push({ def: t, variable: variable });
+    const entry = { success: true, name: t.name, id: variable.id };
+    resultByName[t.name] = entry;
+    results.push(entry);
   } catch (err) {
     results.push({ success: false, name: t.name, error: String(err) });
+  }
+}
+
+// Reference resolution: '{color.blue.600}' -> variable named 'color/blue/600'.
+// Priority: created-in-this-call (exact, then case-insensitive; optionally
+// set-qualified by THIS collection's name), then existing local variables
+// (exact, then case-insensitive; optionally set-qualified by an existing
+// collection's name).
+function isReference(value) {
+  return typeof value === 'string' && /^\\{[^{}]+\\}$/.test(value.trim());
+}
+let existingVars = null;
+let existingCollections = null;
+async function ensureExistingLoaded() {
+  if (existingVars === null) {
+    existingVars = await figma.variables.getLocalVariablesAsync();
+    existingCollections = await figma.variables.getLocalVariableCollectionsAsync();
+  }
+}
+function findCreated(name) {
+  return createdByName[name] || createdByLower[name.toLowerCase()] || null;
+}
+async function resolveReference(raw) {
+  const inner = raw.trim().slice(1, -1);
+  const segments = inner.split('.').filter(function (s) { return s.length > 0; });
+  if (segments.length === 0) return null;
+  const fullName = segments.join('/');
+
+  // 1. Variables created in THIS call.
+  let match = findCreated(fullName);
+  if (match) return match;
+  if (segments.length > 1 && segments[0].toLowerCase() === collectionName.toLowerCase()) {
+    match = findCreated(segments.slice(1).join('/'));
+    if (match) return match;
+  }
+
+  // 2. Existing local variables.
+  await ensureExistingLoaded();
+  match = existingVars.find(function (v) { return v.name === fullName; });
+  if (match) return match;
+  const lowerName = fullName.toLowerCase();
+  match = existingVars.find(function (v) { return v.name.toLowerCase() === lowerName; });
+  if (match) return match;
+  // 2b. Set-qualified: first segment names an existing collection.
+  if (segments.length > 1) {
+    const restName = segments.slice(1).join('/');
+    const restLower = restName.toLowerCase();
+    const setLower = segments[0].toLowerCase();
+    for (const c of existingCollections) {
+      if (c.name.toLowerCase() !== setLower) continue;
+      let m = existingVars.find(function (v) { return v.variableCollectionId === c.id && v.name === restName; });
+      if (!m) m = existingVars.find(function (v) { return v.variableCollectionId === c.id && v.name.toLowerCase() === restLower; });
+      if (m) return m;
+    }
+  }
+  return null;
+}
+
+// Step 4: Apply values — literals directly, brace references as aliases.
+// Value-phase problems attach to the token's EXISTING results entry (as
+// valueErrors) + warnings; they never add a second entry for the same name.
+function noteValueProblem(name, message) {
+  const entry = resultByName[name];
+  if (entry) {
+    entry.valueErrors = entry.valueErrors || [];
+    entry.valueErrors.push(message);
+  }
+  warnings.push('Token "' + name + '": ' + message);
+}
+for (const entry of createdDefs) {
+  const t = entry.def;
+  const variable = entry.variable;
+  for (const [modeName, value] of Object.entries(t.values)) {
+    const modeId = modeMap[modeName];
+    if (!modeId) { noteValueProblem(t.name, 'Unknown mode: ' + modeName + ' — value skipped.'); continue; }
+    try {
+      if (isReference(value)) {
+        const target = await resolveReference(value);
+        if (!target) {
+          warnings.push('Unresolvable reference ' + value + ' for token "' + t.name + '" (mode "' + modeName + '") — no matching variable in this call or the local file. Value skipped.');
+          continue;
+        }
+        variable.setValueForMode(modeId, figma.variables.createVariableAlias(target));
+      } else {
+        const processed = t.resolvedType === 'COLOR' && typeof value === 'string' ? hexToRgba(value) : value;
+        variable.setValueForMode(modeId, processed);
+      }
+    } catch (err) {
+      noteValueProblem(t.name, 'mode "' + modeName + '": ' + String(err));
+    }
   }
 }
 
@@ -1036,7 +1134,8 @@ return {
   modes: modeMap,
   created: results.filter(r => r.success).length,
   failed: results.filter(r => !r.success).length,
-  results
+  results,
+  warnings
 };`;
 
 				const timeout = Math.max(
@@ -2134,57 +2233,13 @@ After instantiating components, use figma_take_screenshot to verify the result l
 	// Component Set Arrangement Tool
 	// ============================================================================
 
-	// Tool: Arrange Component Set (Professional Layout with Native Visualization)
-	// Rearranges variants IN PLACE (sets x/y on existing children) so the component
-	// set's identity is preserved and placed instances are unaffected
-	server.tool(
-		"figma_arrange_component_set",
-		`Organize a component set with Figma's native purple dashed visualization. Use after creating variants, adding states (hover/disabled/pressed), or when component sets need cleanup.
-
-Non-destructive: rearranges the existing variants in place (grid positions on the existing set's children), so the component set keeps its node ID and all placed instances remain intact. Arranges variants in a labeled grid (columns = last property like State, rows = other properties like Type+Size) and wraps the set in a white container with title, row/column labels. Safe to run on component sets with placed instances, and safe to re-run.`,
-		{
-			componentSetId: z
-				.string()
-				.optional()
-				.describe(
-					"Node ID of the component set to arrange. If not provided, will look for a selected component set.",
-				),
-			componentSetName: z
-				.string()
-				.optional()
-				.describe(
-					"Name of the component set to find. Used if componentSetId not provided.",
-				),
-			options: z
-				.object({
-					gap: z
-						.number()
-						.optional()
-						.default(24)
-						.describe("Gap between grid cells in pixels (default: 24)"),
-					cellPadding: z
-						.number()
-						.optional()
-						.default(20)
-						.describe(
-							"Padding inside each cell around the variant (default: 20)",
-						),
-					columnProperty: z
-						.string()
-						.optional()
-						.describe(
-							"Property to use for columns (default: auto-detect last property, usually 'State')",
-						),
-				})
-				.optional()
-				.describe("Layout options"),
-		},
-		async ({ componentSetId, componentSetName, options }) => {
-			try {
-				const connector = await getDesktopConnector();
-
-				// Build the code to execute in Figma
-				const code = `
+	// Builds the in-place grid arrangement script. Shared by
+	// figma_arrange_component_set and figma_create_component_set (autoArrange).
+	const buildArrangeComponentSetCode = (
+		componentSetId: string | null,
+		componentSetName: string | null,
+		options?: { gap?: number; cellPadding?: number; columnProperty?: string },
+	): string => `
 // ============================================================================
 // COMPONENT SET ARRANGEMENT WITH PROPER LABELS AND CONTAINER
 // Creates: White container frame -> Row labels (left) -> Column headers (top) -> Component set (center)
@@ -2629,6 +2684,61 @@ return {
 };
 `;
 
+	// Tool: Arrange Component Set (Professional Layout with Native Visualization)
+	// Rearranges variants IN PLACE (sets x/y on existing children) so the component
+	// set's identity is preserved and placed instances are unaffected
+	server.tool(
+		"figma_arrange_component_set",
+		`Organize a component set with Figma's native purple dashed visualization. Use after creating variants, adding states (hover/disabled/pressed), or when component sets need cleanup.
+
+Non-destructive: rearranges the existing variants in place (grid positions on the existing set's children), so the component set keeps its node ID and all placed instances remain intact. Arranges variants in a labeled grid (columns = last property like State, rows = other properties like Type+Size) and wraps the set in a white container with title, row/column labels. Safe to run on component sets with placed instances, and safe to re-run.`,
+		{
+			componentSetId: z
+				.string()
+				.optional()
+				.describe(
+					"Node ID of the component set to arrange. If not provided, will look for a selected component set.",
+				),
+			componentSetName: z
+				.string()
+				.optional()
+				.describe(
+					"Name of the component set to find. Used if componentSetId not provided.",
+				),
+			options: z
+				.object({
+					gap: z
+						.number()
+						.optional()
+						.default(24)
+						.describe("Gap between grid cells in pixels (default: 24)"),
+					cellPadding: z
+						.number()
+						.optional()
+						.default(20)
+						.describe(
+							"Padding inside each cell around the variant (default: 20)",
+						),
+					columnProperty: z
+						.string()
+						.optional()
+						.describe(
+							"Property to use for columns (default: auto-detect last property, usually 'State')",
+						),
+				})
+				.optional()
+				.describe("Layout options"),
+		},
+		async ({ componentSetId, componentSetName, options }) => {
+			try {
+				const connector = await getDesktopConnector();
+
+				const code = buildArrangeComponentSetCode(
+					componentSetId ?? null,
+					componentSetName ?? null,
+					options,
+				);
+
 				const result = await connector.executeCodeViaUI(code, 25000);
 
 				if (!result.success) {
@@ -2661,6 +2771,220 @@ return {
 									error:
 										error instanceof Error ? error.message : String(error),
 									hint: "Make sure the Desktop Bridge plugin is running and a component set exists.",
+								},
+							),
+						},
+					],
+					isError: true,
+				};
+			}
+		},
+	);
+
+	// Tool: Create Component Set with variants (structured command — no hand-written
+	// figma_execute scripts, no 30s execution-cap juggling for callers)
+	server.tool(
+		"figma_create_component_set",
+		`Create a component set with variants in one call — replaces hand-written figma.combineAsVariants scripts.
+
+Two modes:
+1. **Generate from a base component**: pass baseComponentId + properties (variant axes). The base is cloned for every combination of the axes ({ State: ['default','hover','disabled'], Size: ['sm','lg'] } → 6 variants), each named 'Prop=Value' comma-joined (e.g. 'State=hover, Size=sm'), then combined into a set. The base component itself becomes the FIRST variant (same node ID), so existing instances of the base survive as instances of that variant.
+2. **Combine existing components**: pass componentIds, optionally with variantProperties (aligned 1:1) to rename each component to Prop=Value form before combining.
+
+Figma derives the variant property definitions from the names; they live on the SET (componentPropertyDefinitions), not on individual variants. The result includes each variant's key — instantiate with a VARIANT's key/nodeId via figma_instantiate_component, not the set's key.
+
+Set autoArrange:true to lay the new set out as a labeled grid inside a white container (same layout as figma_arrange_component_set). Requires Desktop Bridge plugin.
+
+SIZE GUIDANCE: hard cap 100 variants. The timeout auto-scales with variant count (~1.2s/variant, 30s floor / 2min cap), but above ~40 variants the single-pass clone+combine gets slow and heavy base components may still push the limit — prefer splitting large matrices into multiple sets (e.g. one set per Size).`,
+		{
+			baseComponentId: z
+				.string()
+				.optional()
+				.describe(
+					"Node ID of an existing COMPONENT to use as the base. Cloned per property combination; becomes the set's first variant (keeps its node ID, so placed instances survive). Mutually exclusive with componentIds.",
+				),
+			properties: z
+				.record(z.string(), z.array(z.string()))
+				.optional()
+				.describe(
+					"Variant property axes — required with baseComponentId. Example: { State: ['default','hover','disabled'], Size: ['sm','lg'] } creates 6 variants. Max 100 combinations. Names and values must not contain '=' or ','.",
+				),
+			componentIds: z
+				.array(z.string())
+				.optional()
+				.describe(
+					"Node IDs of existing COMPONENT nodes to combine as variants. Mutually exclusive with baseComponentId. Components already inside a component set are rejected.",
+				),
+			variantProperties: z
+				.array(z.record(z.string()))
+				.optional()
+				.describe(
+					"Only with componentIds: one property map per component, aligned by index — e.g. [{ State: 'default' }, { State: 'hover' }]. Each component is renamed to 'Prop=Value, ...' before combining. Without this, existing names are kept (names lacking '=' become 'Property 1=<name>').",
+				),
+			name: z
+				.string()
+				.optional()
+				.describe("Name for the component set (e.g., 'Button'). Defaults to Figma's derived name."),
+			parentId: z
+				.string()
+				.optional()
+				.describe(
+					"Node ID of the container (frame/section) to create the set in. Defaults to the current page.",
+				),
+			position: z
+				.object({ x: z.number(), y: z.number() })
+				.optional()
+				.describe("Position of the set within its parent."),
+			autoArrange: z
+				.boolean()
+				.optional()
+				.default(false)
+				.describe(
+					"If true, arrange the new set in a labeled grid (columns = last property, rows = other properties) inside a white container — same in-place layout as figma_arrange_component_set.",
+				),
+			arrangeOptions: z
+				.object({
+					gap: z.number().optional().describe("Gap between grid cells in pixels (default: 24)"),
+					cellPadding: z.number().optional().describe("Padding inside each cell around the variant (default: 20)"),
+					columnProperty: z.string().optional().describe("Property to use for columns (default: last property)"),
+				})
+				.optional()
+				.describe("Grid layout options, used when autoArrange is true."),
+		},
+		async ({
+			baseComponentId,
+			properties,
+			componentIds,
+			variantProperties,
+			name,
+			parentId,
+			position,
+			autoArrange,
+			arrangeOptions,
+		}) => {
+			try {
+				if (!baseComponentId && (!componentIds || componentIds.length === 0)) {
+					throw new Error(
+						"Provide either baseComponentId + properties (generate variants from a base) or componentIds (combine existing components)",
+					);
+				}
+				if (baseComponentId && componentIds && componentIds.length > 0) {
+					throw new Error(
+						"baseComponentId and componentIds are mutually exclusive — pick one mode",
+					);
+				}
+				if (
+					baseComponentId &&
+					(!properties || Object.keys(properties).length === 0)
+				) {
+					throw new Error(
+						"properties is required with baseComponentId. Example: { State: ['default','hover'], Size: ['sm','lg'] }",
+					);
+				}
+
+				// Variant count drives the connector's scaled timeout; above ~40 the
+				// single-pass clone+combine gets slow, so surface a heads-up.
+				let requestedVariantCount = componentIds?.length ?? 1;
+				if (properties && !componentIds?.length) {
+					requestedVariantCount = 1;
+					for (const values of Object.values(properties)) {
+						requestedVariantCount *= Math.max(1, values?.length ?? 1);
+					}
+				}
+				const sizeWarning =
+					requestedVariantCount > 40
+						? `${requestedVariantCount} variants requested — large sets are slow to build (timeout scales automatically, ~1.2s/variant, 2min cap) and heavy base components may still time out. Consider splitting into multiple sets (e.g. one per Size).`
+						: undefined;
+
+				const connector = await getDesktopConnector();
+				const result = await connector.createComponentSet({
+					baseComponentId,
+					properties,
+					componentIds,
+					variantProperties,
+					name,
+					parentId,
+					position,
+				});
+
+				if (!result.success) {
+					throw new Error(result.error || "Failed to create component set");
+				}
+
+				const data = result.data || {};
+
+				// Optional in-place grid arrangement — reuses the same script as
+				// figma_arrange_component_set. Creation already succeeded, so an
+				// arrange failure is reported as a warning, not an error.
+				let arrange: any;
+				if (autoArrange && data.componentSet?.id) {
+					try {
+						const arrangeResult = await connector.executeCodeViaUI(
+							buildArrangeComponentSetCode(
+								data.componentSet.id,
+								null,
+								arrangeOptions,
+							),
+							25000,
+						);
+						if (
+							arrangeResult.success &&
+							arrangeResult.result &&
+							!arrangeResult.result.error
+						) {
+							arrange = {
+								arranged: true,
+								containerId: arrangeResult.result.containerId,
+								grid: arrangeResult.result.grid,
+							};
+						} else {
+							arrange = {
+								arranged: false,
+								error:
+									arrangeResult.error ||
+									arrangeResult.result?.error ||
+									"Arrange failed",
+							};
+						}
+					} catch (arrangeError) {
+						arrange = {
+							arranged: false,
+							error:
+								arrangeError instanceof Error
+									? arrangeError.message
+									: String(arrangeError),
+						};
+					}
+				}
+
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: JSON.stringify(
+								{
+									success: true,
+									message: `Created component set "${data.componentSet?.name ?? name ?? ""}" with ${data.variantCount ?? "?"} variants`,
+									...data,
+									...(sizeWarning ? { sizeWarning } : {}),
+									...(arrange ? { arrange } : {}),
+									hint: "To place instances, pass a VARIANT's key/nodeId from variants[] to figma_instantiate_component — not the set's key. Property definitions live on the set (componentPropertyDefinitions). Use figma_capture_screenshot to verify the result.",
+								},
+							),
+						},
+					],
+				};
+			} catch (error) {
+				logger.error({ error }, "Failed to create component set");
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: JSON.stringify(
+								{
+									error:
+										error instanceof Error ? error.message : String(error),
+									hint: "Make sure the Desktop Bridge plugin is running. baseComponentId/componentIds must reference COMPONENT nodes that are not already inside a component set. Node IDs are session-specific — re-search components if they may be stale.",
 								},
 							),
 						},

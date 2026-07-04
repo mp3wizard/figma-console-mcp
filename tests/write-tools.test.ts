@@ -5,7 +5,14 @@
  * response shapes, edge cases, and code generation logic.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { registerWriteTools } from "../src/core/write-tools";
+import {
+	componentSetTimeoutMs,
+	componentSetVariantCount,
+} from "../src/core/websocket-connector";
 
 // ============================================================================
 // Mock infrastructure
@@ -65,6 +72,20 @@ function createMockConnector(overrides: Record<string, jest.Mock> = {}) {
 		renameNode: jest.fn().mockResolvedValue({ success: true, node: { id: "n1", name: "new" } }),
 		setTextContent: jest.fn().mockResolvedValue({ success: true, node: { id: "n1" } }),
 		createChildNode: jest.fn().mockResolvedValue({ success: true, child: { id: "n3" } }),
+		createComponentSet: jest.fn().mockResolvedValue({
+			success: true,
+			data: {
+				componentSet: { id: "99:1", name: "Button", key: "setkey", x: 0, y: 0, width: 400, height: 300, parentId: "0:1" },
+				variantCount: 2,
+				variants: [
+					{ id: "99:2", name: "State=default", key: "vkey1" },
+					{ id: "99:3", name: "State=hover", key: "vkey2" },
+				],
+				propertyDefinitions: {
+					State: { type: "VARIANT", defaultValue: "default", variantOptions: ["default", "hover"] },
+				},
+			},
+		}),
 		lintDesign: jest.fn().mockResolvedValue({
 			success: true,
 			data: { rootNodeId: "0:1", nodesScanned: 10, categories: [], summary: { total: 0 } },
@@ -95,8 +116,8 @@ describe("Write Tools", () => {
 	// Registration
 	// ========================================================================
 
-	it("registers all 30 write tools", () => {
-		expect(server.tool).toHaveBeenCalledTimes(30);
+	it("registers all 31 write tools", () => {
+		expect(server.tool).toHaveBeenCalledTimes(31);
 	});
 
 	// ========================================================================
@@ -341,6 +362,165 @@ describe("Write Tools", () => {
 	});
 
 	// ========================================================================
+	// Create component set
+	// ========================================================================
+
+	describe("figma_create_component_set", () => {
+		it("forwards base-component mode params to the connector", async () => {
+			const tool = server._getTool("figma_create_component_set");
+			await tool.handler({
+				baseComponentId: "1:1",
+				properties: { State: ["default", "hover"], Size: ["sm", "lg"] },
+				name: "Button",
+				parentId: "0:5",
+				position: { x: 100, y: 200 },
+			});
+
+			expect(mockConnector.createComponentSet).toHaveBeenCalledWith({
+				baseComponentId: "1:1",
+				properties: { State: ["default", "hover"], Size: ["sm", "lg"] },
+				componentIds: undefined,
+				variantProperties: undefined,
+				name: "Button",
+				parentId: "0:5",
+				position: { x: 100, y: 200 },
+			});
+		});
+
+		it("forwards combine-existing mode params to the connector", async () => {
+			const tool = server._getTool("figma_create_component_set");
+			await tool.handler({
+				componentIds: ["1:1", "1:2"],
+				variantProperties: [{ State: "default" }, { State: "hover" }],
+			});
+
+			const params = mockConnector.createComponentSet.mock.calls[0][0];
+			expect(params.componentIds).toEqual(["1:1", "1:2"]);
+			expect(params.variantProperties).toEqual([
+				{ State: "default" },
+				{ State: "hover" },
+			]);
+		});
+
+		it("errors when neither baseComponentId nor componentIds is provided", async () => {
+			const tool = server._getTool("figma_create_component_set");
+			const result = await tool.handler({});
+
+			expect(result.isError).toBe(true);
+			const parsed = parseResult(result);
+			expect(parsed.error).toContain("baseComponentId");
+			expect(mockConnector.createComponentSet).not.toHaveBeenCalled();
+		});
+
+		it("errors when both modes are passed at once", async () => {
+			const tool = server._getTool("figma_create_component_set");
+			const result = await tool.handler({
+				baseComponentId: "1:1",
+				properties: { State: ["default"] },
+				componentIds: ["1:2"],
+			});
+
+			expect(result.isError).toBe(true);
+			const parsed = parseResult(result);
+			expect(parsed.error).toContain("mutually exclusive");
+		});
+
+		it("errors when baseComponentId is passed without properties", async () => {
+			const tool = server._getTool("figma_create_component_set");
+			const result = await tool.handler({ baseComponentId: "1:1" });
+
+			expect(result.isError).toBe(true);
+			const parsed = parseResult(result);
+			expect(parsed.error).toContain("properties");
+		});
+
+		it("returns variant keys and property definitions from the bridge", async () => {
+			const tool = server._getTool("figma_create_component_set");
+			const result = await tool.handler({
+				baseComponentId: "1:1",
+				properties: { State: ["default", "hover"] },
+			});
+			const parsed = parseResult(result);
+
+			expect(parsed.success).toBe(true);
+			expect(parsed.componentSet.id).toBe("99:1");
+			expect(parsed.variants).toHaveLength(2);
+			expect(parsed.variants[0].key).toBe("vkey1");
+			expect(parsed.propertyDefinitions.State.variantOptions).toEqual([
+				"default",
+				"hover",
+			]);
+			expect(parsed.hint).toContain("VARIANT");
+		});
+
+		it("throws when connector returns success:false", async () => {
+			mockConnector.createComponentSet.mockResolvedValue({
+				success: false,
+				error: "Base component is already a variant inside component set",
+			});
+			const tool = server._getTool("figma_create_component_set");
+			const result = await tool.handler({
+				baseComponentId: "1:1",
+				properties: { State: ["default"] },
+			});
+
+			expect(result.isError).toBe(true);
+			const parsed = parseResult(result);
+			expect(parsed.error).toContain("already a variant");
+		});
+
+		it("does not run arrange code by default", async () => {
+			const tool = server._getTool("figma_create_component_set");
+			await tool.handler({
+				baseComponentId: "1:1",
+				properties: { State: ["default"] },
+			});
+
+			expect(mockConnector.executeCodeViaUI).not.toHaveBeenCalled();
+		});
+
+		it("runs the arrange script against the new set when autoArrange is true", async () => {
+			mockConnector.executeCodeViaUI.mockResolvedValue({
+				success: true,
+				result: { success: true, containerId: "77:1", grid: { rows: 1, columns: 2 } },
+			});
+			const tool = server._getTool("figma_create_component_set");
+			const result = await tool.handler({
+				baseComponentId: "1:1",
+				properties: { State: ["default", "hover"] },
+				autoArrange: true,
+			});
+
+			expect(mockConnector.executeCodeViaUI).toHaveBeenCalledTimes(1);
+			const script = mockConnector.executeCodeViaUI.mock.calls[0][0];
+			expect(script).toContain("99:1"); // arranges the set the bridge just created
+
+			const parsed = parseResult(result);
+			expect(parsed.arrange.arranged).toBe(true);
+			expect(parsed.arrange.containerId).toBe("77:1");
+		});
+
+		it("reports arrange failure as a warning while creation still succeeds", async () => {
+			mockConnector.executeCodeViaUI.mockResolvedValue({
+				success: true,
+				result: { error: "Component set not found" },
+			});
+			const tool = server._getTool("figma_create_component_set");
+			const result = await tool.handler({
+				baseComponentId: "1:1",
+				properties: { State: ["default"] },
+				autoArrange: true,
+			});
+
+			expect(result.isError).toBeUndefined();
+			const parsed = parseResult(result);
+			expect(parsed.success).toBe(true);
+			expect(parsed.arrange.arranged).toBe(false);
+			expect(parsed.arrange.error).toContain("not found");
+		});
+	});
+
+	// ========================================================================
 	// Arrange component set — code generation
 	// ========================================================================
 
@@ -361,5 +541,527 @@ describe("Write Tools", () => {
 			// The generated code should use the custom values
 			expect(script).toBeDefined();
 		});
+	});
+
+	// ========================================================================
+	// figma_setup_design_tokens — alias reference values
+	//
+	// The generated bridge script is executed for real against a fake
+	// `figma.variables` sandbox, so reference resolution (same-call, existing
+	// local, set-qualified, unresolvable) is tested behaviorally rather than
+	// by string-matching the script.
+	// ========================================================================
+
+	describe("figma_setup_design_tokens alias references", () => {
+		interface FakeVariable {
+			id: string;
+			name: string;
+			resolvedType: string;
+			variableCollectionId: string;
+			description: string;
+			valuesByMode: Record<string, unknown>;
+			setValueForMode(modeId: string, value: unknown): void;
+		}
+
+		function makeSandbox(env: {
+			existingVars?: Array<Partial<FakeVariable>>;
+			existingCollections?: Array<{ id: string; name: string }>;
+		} = {}) {
+			let varCounter = 0;
+			const createdVariables: FakeVariable[] = [];
+			const existingVars: FakeVariable[] = (env.existingVars ?? []).map(
+				(v) =>
+					({
+						description: "",
+						valuesByMode: {},
+						setValueForMode(modeId: string, value: unknown) {
+							this.valuesByMode[modeId] = value;
+						},
+						...v,
+					}) as FakeVariable,
+			);
+			const figma = {
+				variables: {
+					createVariableCollection: (name: string) => {
+						const collection = {
+							id: "VariableCollectionId:fake:1",
+							name,
+							modes: [{ modeId: "m0", name: "Mode 1" }],
+							renameMode(modeId: string, newName: string) {
+								const m = collection.modes.find((x) => x.modeId === modeId);
+								if (m) m.name = newName;
+							},
+							addMode(newName: string) {
+								const modeId = `m${collection.modes.length}`;
+								collection.modes.push({ modeId, name: newName });
+								return modeId;
+							},
+						};
+						return collection;
+					},
+					createVariable: (name: string, _collection: any, type: string) => {
+						const variable: FakeVariable = {
+							id: `VariableID:fake:${++varCounter}`,
+							name,
+							resolvedType: type,
+							variableCollectionId: "VariableCollectionId:fake:1",
+							description: "",
+							valuesByMode: {},
+							setValueForMode(modeId: string, value: unknown) {
+								this.valuesByMode[modeId] = value;
+							},
+						};
+						createdVariables.push(variable);
+						return variable;
+					},
+					createVariableAlias: (variable: { id: string }) => ({
+						type: "VARIABLE_ALIAS",
+						id: variable.id,
+					}),
+					getLocalVariablesAsync: async () => [
+						...existingVars,
+						...createdVariables,
+					],
+					getLocalVariableCollectionsAsync: async () =>
+						env.existingCollections ?? [],
+				},
+			};
+			return { figma, createdVariables };
+		}
+
+		/** Register the tool with a connector that ACTUALLY runs the script. */
+		function setupWithSandbox(sandbox: ReturnType<typeof makeSandbox>) {
+			const localServer = createMockServer();
+			const connector = {
+				executeCodeViaUI: jest.fn(async (script: string) => {
+					const fn = new Function(
+						"figma",
+						`"use strict"; return (async () => {\n${script}\n})();`,
+					);
+					return { success: true, result: await fn(sandbox.figma) };
+				}),
+			};
+			registerWriteTools(localServer as any, async () => connector as any);
+			return { tool: localServer._getTool("figma_setup_design_tokens") };
+		}
+
+		function findVar(sandbox: ReturnType<typeof makeSandbox>, name: string) {
+			const v = sandbox.createdVariables.find((x) => x.name === name);
+			expect(v).toBeDefined();
+			return v!;
+		}
+
+		it("resolves a reference to a variable created in the SAME call (forward reference)", async () => {
+			const sandbox = makeSandbox();
+			const { tool } = setupWithSandbox(sandbox);
+			const result = await tool.handler({
+				collectionName: "Semantic",
+				modes: ["Default"],
+				tokens: [
+					// Alias declared BEFORE its target — proves the two-pass apply.
+					{
+						name: "color/primary",
+						resolvedType: "COLOR",
+						values: { Default: "{color.blue.600}" },
+					},
+					{
+						name: "color/blue/600",
+						resolvedType: "COLOR",
+						values: { Default: "#2563EB" },
+					},
+				],
+			});
+
+			const parsed = parseResult(result);
+			expect(parsed.success).toBe(true);
+			expect(parsed.created).toBe(2);
+			expect(parsed.warnings).toEqual([]);
+
+			const target = findVar(sandbox, "color/blue/600");
+			expect(findVar(sandbox, "color/primary").valuesByMode.m0).toEqual({
+				type: "VARIABLE_ALIAS",
+				id: target.id,
+			});
+		});
+
+		it("resolves references to EXISTING local variables, including set-qualified form", async () => {
+			const sandbox = makeSandbox({
+				existingVars: [
+					{
+						id: "VariableID:existing:1",
+						name: "color/base",
+						resolvedType: "COLOR",
+						variableCollectionId: "VC:prims",
+					},
+				],
+				existingCollections: [{ id: "VC:prims", name: "Primitives" }],
+			});
+			const { tool } = setupWithSandbox(sandbox);
+			const result = await tool.handler({
+				collectionName: "Semantic",
+				modes: ["Default"],
+				tokens: [
+					{
+						name: "color/bg",
+						resolvedType: "COLOR",
+						values: { Default: "{color.base}" },
+					},
+					{
+						// Set-qualified: leading "primitives" segment names the
+						// existing collection (case-insensitively).
+						name: "color/fg",
+						resolvedType: "COLOR",
+						values: { Default: "{primitives.color.base}" },
+					},
+				],
+			});
+
+			const parsed = parseResult(result);
+			expect(parsed.warnings).toEqual([]);
+			expect(findVar(sandbox, "color/bg").valuesByMode.m0).toEqual({
+				type: "VARIABLE_ALIAS",
+				id: "VariableID:existing:1",
+			});
+			expect(findVar(sandbox, "color/fg").valuesByMode.m0).toEqual({
+				type: "VARIABLE_ALIAS",
+				id: "VariableID:existing:1",
+			});
+		});
+
+		it("skips unresolvable references with a per-item warning without failing the batch", async () => {
+			const sandbox = makeSandbox();
+			const { tool } = setupWithSandbox(sandbox);
+			const result = await tool.handler({
+				collectionName: "Semantic",
+				modes: ["Default"],
+				tokens: [
+					{
+						name: "color/ghost",
+						resolvedType: "COLOR",
+						values: { Default: "{nowhere.to.be.found}" },
+					},
+					{
+						name: "color/solid",
+						resolvedType: "COLOR",
+						values: { Default: "#FF0000" },
+					},
+				],
+			});
+
+			const parsed = parseResult(result);
+			expect(parsed.success).toBe(true);
+			// Both variables are created; only the ghost VALUE is skipped.
+			expect(parsed.created).toBe(2);
+			expect(parsed.warnings).toHaveLength(1);
+			expect(parsed.warnings[0]).toContain("{nowhere.to.be.found}");
+			expect(parsed.warnings[0]).toContain("color/ghost");
+
+			expect(findVar(sandbox, "color/ghost").valuesByMode).toEqual({});
+			expect(findVar(sandbox, "color/solid").valuesByMode.m0).toEqual({
+				r: 1,
+				g: 0,
+				b: 0,
+				a: 1,
+			});
+		});
+
+		it("handles mixed literal + alias values across multiple modes", async () => {
+			const sandbox = makeSandbox();
+			const { tool } = setupWithSandbox(sandbox);
+			const result = await tool.handler({
+				collectionName: "Theme",
+				modes: ["Light", "Dark"],
+				tokens: [
+					{
+						name: "color/white",
+						resolvedType: "COLOR",
+						values: { Light: "#FFFFFF", Dark: "#FFFFFF" },
+					},
+					{
+						name: "color/surface",
+						resolvedType: "COLOR",
+						// Light literal, Dark alias — mixed within ONE token.
+						values: { Light: "#F5F5F5", Dark: "{color.white}" },
+					},
+					{
+						name: "spacing/md",
+						resolvedType: "FLOAT",
+						values: { Light: 16, Dark: 16 },
+					},
+				],
+			});
+
+			const parsed = parseResult(result);
+			expect(parsed.created).toBe(3);
+			expect(parsed.failed).toBe(0);
+			expect(parsed.warnings).toEqual([]);
+
+			const white = findVar(sandbox, "color/white");
+			const surface = findVar(sandbox, "color/surface");
+			// Light = m0 (renamed default), Dark = m1 (added).
+			expect(surface.valuesByMode.m0).toEqual({
+				r: 0xf5 / 255,
+				g: 0xf5 / 255,
+				b: 0xf5 / 255,
+				a: 1,
+			});
+			expect(surface.valuesByMode.m1).toEqual({
+				type: "VARIABLE_ALIAS",
+				id: white.id,
+			});
+			expect(findVar(sandbox, "spacing/md").valuesByMode.m0).toBe(16);
+		});
+
+		it("keeps ONE results entry per token — value-phase problems attach as valueErrors instead of inflating created+failed", async () => {
+			const sandbox = makeSandbox();
+			const { tool } = setupWithSandbox(sandbox);
+			const result = await tool.handler({
+				collectionName: "Brand",
+				modes: ["Default"],
+				tokens: [
+					{
+						name: "color/x",
+						resolvedType: "COLOR",
+						// "Ghost" is not a declared mode — previously this pushed a
+						// SECOND results entry for color/x, so created + failed
+						// exceeded the token count.
+						values: { Default: "#FFFFFF", Ghost: "#000000" },
+					},
+				],
+			});
+
+			const parsed = parseResult(result);
+			expect(parsed.results).toHaveLength(1);
+			expect(parsed.created).toBe(1);
+			expect(parsed.failed).toBe(0);
+			expect(parsed.created + parsed.failed).toBe(1);
+			expect(parsed.results[0].success).toBe(true);
+			expect(parsed.results[0].valueErrors).toEqual([
+				"Unknown mode: Ghost — value skipped.",
+			]);
+			expect(parsed.warnings).toHaveLength(1);
+			expect(parsed.warnings[0]).toContain("Unknown mode: Ghost");
+			// The Default value still applied.
+			expect(findVar(sandbox, "color/x").valuesByMode.m0).toEqual({
+				r: 1,
+				g: 1,
+				b: 1,
+				a: 1,
+			});
+		});
+	});
+});
+
+// ============================================================================
+// CREATE_COMPONENT_SET timeout scaling (Finding 5)
+// ============================================================================
+
+describe("createComponentSet timeout scaling", () => {
+	it("computes variant count from the axes matrix (Mode A)", () => {
+		expect(
+			componentSetVariantCount({
+				properties: { State: ["default", "hover", "disabled"], Size: ["sm", "lg"] },
+			}),
+		).toBe(6);
+	});
+
+	it("uses componentIds length for Mode B", () => {
+		expect(
+			componentSetVariantCount({
+				componentIds: Array.from({ length: 48 }, (_, i) => `c${i}`),
+			}),
+		).toBe(48);
+	});
+
+	it("keeps the 30s floor (+5s server buffer) for small sets", () => {
+		expect(
+			componentSetTimeoutMs({ properties: { State: ["a", "b"] } }),
+		).toBe(35000);
+	});
+
+	it("scales past 30s for large matrices (48 variants no longer double-timeouts)", () => {
+		// 48 * 1200 = 57600ms base + 5000 buffer — comfortably past the old
+		// fixed 30s that fired while the plugin kept building the set.
+		expect(
+			componentSetTimeoutMs({
+				componentIds: Array.from({ length: 48 }, (_, i) => `c${i}`),
+			}),
+		).toBe(62600);
+	});
+
+	it("caps at 120s (+5s buffer) at the 100-variant hard limit", () => {
+		expect(
+			componentSetTimeoutMs({
+				componentIds: Array.from({ length: 100 }, (_, i) => `c${i}`),
+			}),
+		).toBe(125000);
+	});
+});
+
+// ============================================================================
+// code.js CREATE_COMPONENT_SET handler — Mode B hardening (Finding 6)
+//
+// The handler block is extracted from figma-desktop-bridge/code.js and
+// executed against a fake `figma` sandbox, so validation and rename-rollback
+// behavior is tested for real rather than by string-matching the source.
+// ============================================================================
+
+describe("code.js CREATE_COMPONENT_SET Mode B hardening", () => {
+	const codeJsSource = readFileSync(
+		join(__dirname, "../figma-desktop-bridge/code.js"),
+		"utf-8",
+	);
+
+	function extractHandler() {
+		const start = codeJsSource.indexOf(
+			"else if (msg.type === 'CREATE_COMPONENT_SET')",
+		);
+		if (start === -1) throw new Error("CREATE_COMPONENT_SET handler not found");
+		const endMarker = codeJsSource.indexOf("// SET_NODE_DESCRIPTION", start);
+		const block = codeJsSource.slice(
+			start,
+			codeJsSource.lastIndexOf("}", endMarker) + 1,
+		);
+		// `if (false) {}` satisfies the leading `else if`.
+		return new Function(
+			"figma",
+			"msg",
+			`return (async () => { if (false) {} ${block} })();`,
+		);
+	}
+
+	function makeComponent(id: string, name: string) {
+		return {
+			id,
+			name,
+			key: `key-${id}`,
+			type: "COMPONENT",
+			x: 0,
+			y: 0,
+			height: 40,
+			parent: { type: "PAGE" },
+		};
+	}
+
+	function makeComponentSetSandbox(
+		nodes: Array<ReturnType<typeof makeComponent>>,
+		opts: { combineThrows?: string } = {},
+	) {
+		const posted: any[] = [];
+		const byId = new Map(nodes.map((n) => [n.id, n]));
+		const figma = {
+			getNodeByIdAsync: async (id: string) => byId.get(id) ?? null,
+			combineAsVariants: (variants: any[], parent: any) => {
+				if (opts.combineThrows) throw new Error(opts.combineThrows);
+				return {
+					id: "SET:1",
+					name: "Set",
+					key: "setkey",
+					x: 0,
+					y: 0,
+					width: 100,
+					height: 100,
+					parent,
+					children: variants,
+					componentPropertyDefinitions: {},
+				};
+			},
+			currentPage: { id: "0:1", selection: [] as any[] },
+			viewport: { scrollAndZoomIntoView: () => {} },
+			ui: { postMessage: (m: any) => posted.push(m) },
+		};
+		return { figma, posted };
+	}
+
+	async function runHandler(
+		sandbox: ReturnType<typeof makeComponentSetSandbox>,
+		msg: Record<string, unknown>,
+	) {
+		await extractHandler()(sandbox.figma, {
+			type: "CREATE_COMPONENT_SET",
+			requestId: "req-1",
+			...msg,
+		});
+		expect(sandbox.posted).toHaveLength(1);
+		return sandbox.posted[0];
+	}
+
+	it("sanity: valid Mode B combine renames components and succeeds", async () => {
+		const c1 = makeComponent("c1", "Btn A");
+		const c2 = makeComponent("c2", "Btn B");
+		const sandbox = makeComponentSetSandbox([c1, c2]);
+		const result = await runHandler(sandbox, {
+			componentIds: ["c1", "c2"],
+			variantProperties: [{ State: "default" }, { State: "hover" }],
+		});
+
+		expect(result.success).toBe(true);
+		expect(c1.name).toBe("State=default");
+		expect(c2.name).toBe("State=hover");
+		expect(result.data.variantCount).toBe(2);
+	});
+
+	it("rejects variantProperties VALUES containing '=' or ',' and restores earlier renames", async () => {
+		const c1 = makeComponent("c1", "Btn A");
+		const c2 = makeComponent("c2", "Btn B");
+		const sandbox = makeComponentSetSandbox([c1, c2]);
+		const result = await runHandler(sandbox, {
+			componentIds: ["c1", "c2"],
+			// c1 renames fine; c2's value would silently create a bogus axis.
+			variantProperties: [{ State: "default" }, { State: "hover,Size=lg" }],
+		});
+
+		expect(result.success).toBe(false);
+		expect(result.error).toContain('must not contain "=" or ","');
+		expect(result.error).toContain("hover,Size=lg");
+		// The rename applied to c1 before the throw is rolled back.
+		expect(c1.name).toBe("Btn A");
+		expect(c2.name).toBe("Btn B");
+	});
+
+	it("rejects variantProperties KEYS containing '=' or ','", async () => {
+		const c1 = makeComponent("c1", "Btn A");
+		const sandbox = makeComponentSetSandbox([c1]);
+		const result = await runHandler(sandbox, {
+			componentIds: ["c1"],
+			variantProperties: [{ "State=weird": "hover" }],
+		});
+
+		expect(result.success).toBe(false);
+		expect(result.error).toContain('Property name "State=weird"');
+		expect(c1.name).toBe("Btn A");
+	});
+
+	it("restores Mode B renames when the duplicate-combination check throws", async () => {
+		const c1 = makeComponent("c1", "Btn A");
+		const c2 = makeComponent("c2", "Btn B");
+		const sandbox = makeComponentSetSandbox([c1, c2]);
+		const result = await runHandler(sandbox, {
+			componentIds: ["c1", "c2"],
+			// Identical combos — throws AFTER both components were renamed.
+			variantProperties: [{ State: "hover" }, { State: "hover" }],
+		});
+
+		expect(result.success).toBe(false);
+		expect(result.error).toContain("identical properties");
+		expect(c1.name).toBe("Btn A");
+		expect(c2.name).toBe("Btn B");
+	});
+
+	it("restores Mode B renames when combineAsVariants itself throws", async () => {
+		const c1 = makeComponent("c1", "Btn A");
+		const c2 = makeComponent("c2", "Btn B");
+		const sandbox = makeComponentSetSandbox([c1, c2], {
+			combineThrows: "boom-combine",
+		});
+		const result = await runHandler(sandbox, {
+			componentIds: ["c1", "c2"],
+			variantProperties: [{ State: "default" }, { State: "hover" }],
+		});
+
+		expect(result.success).toBe(false);
+		expect(result.error).toBe("boom-combine");
+		expect(c1.name).toBe("Btn A");
+		expect(c2.name).toBe("Btn B");
 	});
 });

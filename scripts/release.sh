@@ -255,14 +255,31 @@ replace_in_file "$ROOT/src/core/tokens-tools.ts" \
   "MCP_VERSION constant"
 
 # ── 3b. PLUGIN_VERSION sync in figma-desktop-bridge/code.js ──
-# Keeps the in-plugin PLUGIN_VERSION constant aligned with package.json. Without this,
-# Figma's plugin runtime can serve cached pre-bump code.js / ui.html and tools added
-# after the cached version's release will fail with "Unknown method". See issue #62.
+# Bumped ONLY when plugin files actually changed since the last release.
+# When they did change, the bump busts Figma's plugin-file cache and marks
+# older imported plugins stale (issue #62). When they did NOT change
+# (server-only release: deps, docs, server code), the constant must stay
+# put — the server's FILE_INFO handshake compares the plugin's reported
+# version against THIS constant, and bumping it would falsely flag every
+# connected plugin as needing a re-import.
 echo -e "${BOLD}3b. figma-desktop-bridge PLUGIN_VERSION${NC}"
-replace_in_file "$ROOT/figma-desktop-bridge/code.js" \
-  "var PLUGIN_VERSION = '[0-9]+\.[0-9]+\.[0-9]+'" \
-  "var PLUGIN_VERSION = '$VERSION'" \
-  "PLUGIN_VERSION constant"
+PLUGIN_FILES_CHANGED=true
+if git -C "$ROOT" rev-parse -q --verify "v$CURRENT_VERSION" > /dev/null 2>&1; then
+  # -I ignores the PLUGIN_VERSION line itself (a prior bump must not read as a
+  # "plugin change" next release) and JS comment lines (comment-only edits
+  # don't require a re-import).
+  if git -C "$ROOT" diff --quiet -I '^var PLUGIN_VERSION' -I '^//' "v$CURRENT_VERSION" -- figma-desktop-bridge/; then
+    PLUGIN_FILES_CHANGED=false
+  fi
+fi
+if $PLUGIN_FILES_CHANGED; then
+  replace_in_file "$ROOT/figma-desktop-bridge/code.js" \
+    "var PLUGIN_VERSION = '[0-9]+\.[0-9]+\.[0-9]+'" \
+    "var PLUGIN_VERSION = '$VERSION'" \
+    "PLUGIN_VERSION constant"
+else
+  echo -e "  ${CYAN}SKIP${NC} figma-desktop-bridge/code.js — no plugin file changes since v$CURRENT_VERSION (server-only release; keeping PLUGIN_VERSION so connected plugins aren't falsely flagged stale)"
+fi
 
 # ── 4. Local tool count (N+ tools) ─────────────────────
 # Matches any number followed by + and "tool(s)" in context of local/full mode
@@ -348,6 +365,23 @@ for f in "${ALL_DOC_FILES[@]}"; do
     "(${CLOUD_TOOLS} tools)" \
     "(N tools) cloud"
 
+  # CORRECTIVE (must run AFTER the generic rule above): the bottom-line
+  # sentence in mode-comparison.md has three DIFFERENT counts in one line —
+  # "read-only (9 tools) … write access (95 tools) … everything (106 tools)".
+  # The generic rule clobbers all three to the cloud count (shipped wrong in
+  # v1.33.0 and again in v1.33.1's first pass); these anchored rules repair
+  # the remote and local slots. sed -E has no lookbehind, so clobber-then-
+  # correct ordering is the mechanism — do not reorder.
+  replace_in_file "$ROOT/$f" \
+    "read-only \\(([0-9]+) tools\\)" \
+    "read-only (${REMOTE_TOOLS} tools)" \
+    "read-only (N tools) corrective"
+
+  replace_in_file "$ROOT/$f" \
+    "everything \\(([0-9]+) tools\\)" \
+    "everything (${LOCAL_TOOLS} tools)" \
+    "everything (N tools) corrective"
+
   # "N tools including full write" — cloud mode in README
   replace_in_file "$ROOT/$f" \
     "[0-9]+ tools including full write" \
@@ -365,6 +399,21 @@ for f in "${ALL_DOC_FILES[@]}"; do
     "— [0-9]+ tools" \
     "— ${CLOUD_TOOLS} tools" \
     "— N tools"
+
+  # CORRECTIVE (must run AFTER the generic rule above): the three setup
+  # cards in docs/index.mdx each carry a different mode's count; the generic
+  # rule sets all three to the cloud count. Anchor by card label to repair
+  # the NPX (local) and Remote slots. Same clobber-then-correct ordering as
+  # the parenthesized rules — do not reorder.
+  replace_in_file "$ROOT/$f" \
+    "Full capabilities — [0-9]+ tools" \
+    "Full capabilities — ${LOCAL_TOOLS} tools" \
+    "Full capabilities — N tools corrective"
+
+  replace_in_file "$ROOT/$f" \
+    "Quick exploration — [0-9]+ tools" \
+    "Quick exploration — ${REMOTE_TOOLS} tools" \
+    "Quick exploration — N tools corrective"
 done
 
 # ── 7. Lockfile sync ───────────────────────────────────

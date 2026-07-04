@@ -223,6 +223,32 @@ export class CloudWebSocketConnector implements IFigmaConnector {
 		return this.sendCommand('INSTANTIATE_COMPONENT', params);
 	}
 
+	async createComponentSet(params: {
+		baseComponentId?: string;
+		properties?: Record<string, string[]>;
+		componentIds?: string[];
+		variantProperties?: Array<Record<string, string>>;
+		name?: string;
+		parentId?: string;
+		position?: { x: number; y: number };
+	}): Promise<any> {
+		// Timeout scales with variant count — the plugin builds all variants in
+		// one uncancellable pass, so a fixed 30s ceiling on big matrices reports
+		// failure while the set still gets created (retry → duplicates).
+		// Mirrors componentSetTimeoutMs in websocket-connector.ts (not imported:
+		// that module pulls the Node 'ws' stack into the Workers bundle).
+		let variantCount = 1;
+		if (params.componentIds?.length) {
+			variantCount = params.componentIds.length;
+		} else if (params.properties) {
+			for (const values of Object.values(params.properties)) {
+				variantCount *= Math.max(1, values?.length ?? 1);
+			}
+		}
+		const timeout = Math.min(120000, Math.max(30000, variantCount * 1200)) + 5000;
+		return this.sendCommand('CREATE_COMPONENT_SET', params, timeout);
+	}
+
 	// ============================================================================
 	// Node manipulation
 	// ============================================================================
