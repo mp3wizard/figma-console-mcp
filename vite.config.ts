@@ -9,6 +9,7 @@ export default defineConfig({
 	root: appRoot,
 	plugins: [viteSingleFile()],
 	build: {
+		target: "es2020",
 		outDir: resolve(__dirname, `dist/apps/${appName}`),
 		emptyOutDir: false,
 		rollupOptions: {
