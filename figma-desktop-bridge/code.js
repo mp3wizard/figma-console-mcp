@@ -9,7 +9,7 @@
 // detect stale cached plugins. Bumped by scripts/release.sh ONLY when plugin files
 // change (see issue #62); server-only releases leave it alone, so it may lag
 // package.json — that's intentional, not drift.
-var PLUGIN_VERSION = '1.34.0'; // Last release in which plugin files changed.
+var PLUGIN_VERSION = '1.35.0'; // Last release in which plugin files changed.
 
 console.log('🌉 [Desktop Bridge] Plugin loaded (v' + PLUGIN_VERSION + ')');
 
@@ -400,6 +400,89 @@ function resolvePropertyName(currentProps, name) {
     }
   }
   return null;
+}
+
+// ============================================================================
+// Slot helpers — Figma Slots open beta (SlotNode API)
+// ============================================================================
+
+function serializeSlotsFromNode(rootNode) {
+  var slots = [];
+  if (!rootNode || typeof rootNode.findAllWithCriteria !== 'function') {
+    return slots;
+  }
+
+  var slotNodes = rootNode.findAllWithCriteria({ types: ['SLOT'] });
+  for (var si = 0; si < slotNodes.length; si++) {
+    var slot = slotNodes[si];
+    var slotInfo = {
+      id: slot.id,
+      name: slot.name,
+      type: 'SLOT',
+      width: slot.width,
+      height: slot.height,
+      layoutMode: slot.layoutMode || 'NONE',
+      propertyKey: null,
+      children: []
+    };
+
+    try {
+      if (slot.componentPropertyReferences && slot.componentPropertyReferences.slotContentId) {
+        slotInfo.propertyKey = slot.componentPropertyReferences.slotContentId;
+      }
+    } catch (e) { /* ignore */ }
+
+    try {
+      for (var ci = 0; ci < slot.children.length; ci++) {
+        var ch = slot.children[ci];
+        slotInfo.children.push({ id: ch.id, name: ch.name, type: ch.type });
+      }
+    } catch (e) { /* slot sublayer — skip inaccessible children */ }
+
+    slots.push(slotInfo);
+  }
+
+  return slots;
+}
+
+async function resolveSlotNode(params) {
+  if (params.slotId) {
+    var slotById = await figma.getNodeByIdAsync(params.slotId);
+    if (!slotById) {
+      throw new Error('Slot node not found: ' + params.slotId);
+    }
+    if (slotById.type !== 'SLOT') {
+      throw new Error('Node is not a SLOT. Got: ' + slotById.type);
+    }
+    return slotById;
+  }
+
+  if (params.instanceId && params.slotName) {
+    var instance = await figma.getNodeByIdAsync(params.instanceId);
+    if (!instance) {
+      throw new Error('Instance node not found: ' + params.instanceId);
+    }
+    if (instance.type !== 'INSTANCE') {
+      throw new Error('Node must be an INSTANCE when using instanceId + slotName. Got: ' + instance.type);
+    }
+    if (typeof instance.findAllWithCriteria !== 'function') {
+      throw new Error('Instance does not support slot lookup');
+    }
+    var allSlots = instance.findAllWithCriteria({ types: ['SLOT'] });
+    var matches = allSlots.filter(function(n) {
+      return n.name === params.slotName;
+    });
+    if (matches.length === 0) {
+      var available = allSlots.map(function(n) { return n.name; });
+      throw new Error('Slot "' + params.slotName + '" not found on instance. Available slots: ' + (available.length ? available.join(', ') : '(none)'));
+    }
+    // findAllWithCriteria is deep — a nested instance can carry an identically
+    // named slot. Prefer the instance's OWN slot (direct child) over nested ones.
+    var direct = matches.filter(function(n) { return n.parent === instance; });
+    return (direct.length ? direct : matches)[0];
+  }
+
+  throw new Error('Provide slotId OR (instanceId + slotName)');
 }
 
 // Listen for requests from UI (e.g., component data requests, write operations)
@@ -997,10 +1080,22 @@ figma.ui.onmessage = async (msg) => {
           componentPropertyDefinitions: (node.type === 'COMPONENT_SET' || (node.type === 'COMPONENT' && !isVariant))
             ? node.componentPropertyDefinitions
             : undefined,
-          // Get children info (lightweight) — skip unresolvable slot sublayers
+          // Get children info (lightweight) — include SLOT nodes; skip unresolvable slot sublayers
           children: node.children ? node.children.reduce((acc, child) => {
             try {
-              acc.push({ id: child.id, name: child.name, type: child.type });
+              var childInfo = { id: child.id, name: child.name, type: child.type };
+              if (child.type === 'SLOT') {
+                childInfo.isSlot = true;
+                try {
+                  if (child.componentPropertyReferences && child.componentPropertyReferences.slotContentId) {
+                    childInfo.propertyKey = child.componentPropertyReferences.slotContentId;
+                  }
+                } catch (e) { /* ignore */ }
+                try {
+                  childInfo.childCount = child.children ? child.children.length : 0;
+                } catch (e) { /* ignore */ }
+              }
+              acc.push(childInfo);
             } catch (e) { /* slot sublayer or table cell — skip */ }
             return acc;
           }, []) : undefined
@@ -1302,7 +1397,7 @@ figma.ui.onmessage = async (msg) => {
         slots: extractSlots(node),
         stateMachine: stateMachine,
         variants: variantDiffs,
-        ai_instruction: 'Use cssMapping to implement interaction states. diffFromDefault shows only what changes per state — apply these as CSS pseudo-class or attribute overrides. componentProps maps to React/Vue component props (BOOLEAN → boolean prop, TEXT → string prop, INSTANCE_SWAP → ReactNode/slot prop). slots lists Figma SLOT properties — implement each as a named slot / children prop (React: {children} or a named ReactNode prop; Web Components: <slot name>); preferredValues lists the components a slot accepts, and limitViolations flags content that breaks the slot\'s min/max rules.'
+        ai_instruction: 'Use cssMapping to implement interaction states. diffFromDefault shows only what changes per state — apply these as CSS pseudo-class or attribute overrides. componentProps maps to React/Vue component props (BOOLEAN → boolean prop, TEXT → string prop, INSTANCE_SWAP → ReactNode/slot prop). slots lists Figma SLOT properties — implement each as a named slot / children prop (React: {children} or a named ReactNode prop; Web Components: <slot name>); preferredValues lists the components a slot accepts, and limitViolations flags content that breaks the slot\'s min/max rules. To populate a slot on an instance, use figma_append_to_slot (not figma_set_instance_properties).'
       };
 
       console.log('🌉 [Desktop Bridge] Component set analysis complete. ' + variants.length + ' variants, ' + Object.keys(stateMachine.cssMapping).length + ' CSS mappings');
@@ -2617,14 +2712,25 @@ figma.ui.onmessage = async (msg) => {
         throw new Error('Cannot add properties to variant components. Add to the parent COMPONENT_SET instead.');
       }
 
-      // Build options if preferredValues provided
+      // Build options if preferredValues and/or description provided (SLOT supports both)
       var options = undefined;
-      if (msg.preferredValues) {
-        options = { preferredValues: msg.preferredValues };
+      if (msg.preferredValues || msg.description) {
+        options = {};
+        if (msg.preferredValues) options.preferredValues = msg.preferredValues;
+        if (msg.description) options.description = msg.description;
+      }
+
+      // SLOT properties do not support defaultValue — pass empty string.
+      // VARIANT properties REQUIRE a non-empty defaultValue (live-validated
+      // 2026-07-09: '' throws "Component property default value cannot be
+      // empty") — pass the caller's value through untouched.
+      var defaultValue = msg.defaultValue;
+      if (msg.propertyType === 'SLOT') {
+        defaultValue = '';
       }
 
       // Use msg.propertyType (not msg.type which is the message type 'ADD_COMPONENT_PROPERTY')
-      var propertyNameWithId = node.addComponentProperty(msg.propertyName, msg.propertyType, msg.defaultValue, options);
+      var propertyNameWithId = node.addComponentProperty(msg.propertyName, msg.propertyType, defaultValue, options);
 
       console.log('🌉 [Desktop Bridge] Property added:', propertyNameWithId);
 
@@ -2720,6 +2826,287 @@ figma.ui.onmessage = async (msg) => {
         requestId: msg.requestId,
         success: false,
         error: errorMsg
+      });
+    }
+  }
+
+  // ============================================================================
+  // SLOT OPERATIONS — Figma Slots open beta (SlotNode API)
+  // ============================================================================
+
+  // CREATE_SLOT — create a SlotNode inside a component via createSlot()
+  else if (msg.type === 'CREATE_SLOT') {
+    try {
+      console.log('🌉 [Desktop Bridge] Creating slot on component:', msg.nodeId);
+
+      var componentNode = await figma.getNodeByIdAsync(msg.nodeId);
+      if (!componentNode) {
+        throw new Error('Node not found: ' + msg.nodeId);
+      }
+      if (componentNode.type !== 'COMPONENT') {
+        throw new Error('Node must be a COMPONENT (standalone or a variant inside a COMPONENT_SET). Got: ' + componentNode.type + '. For a COMPONENT_SET, call this once per variant component.');
+      }
+      if (typeof componentNode.createSlot !== 'function') {
+        throw new Error('createSlot() is not available. Update Figma Desktop to a version with Slots support.');
+      }
+
+      // createSlot() takes no arguments (a name arg is ignored — live-validated
+      // 2026-07-09). Renaming the returned node renames the linked SLOT property
+      // key live (Slot#id → Name#id), so rename-after-create IS the naming API.
+      var newSlot = componentNode.createSlot();
+      if (msg.name) newSlot.name = msg.name;
+      if (msg.layoutMode && msg.layoutMode !== 'GRID') {
+        newSlot.layoutMode = msg.layoutMode;
+      } else if (msg.layoutMode === 'GRID') {
+        throw new Error('GRID layoutMode is not allowed on slot nodes');
+      }
+      if (msg.width !== undefined || msg.height !== undefined) {
+        newSlot.resize(
+          msg.width !== undefined ? msg.width : newSlot.width,
+          msg.height !== undefined ? msg.height : newSlot.height
+        );
+      }
+
+      var slotPropertyKey = null;
+      try {
+        if (newSlot.componentPropertyReferences && newSlot.componentPropertyReferences.slotContentId) {
+          slotPropertyKey = newSlot.componentPropertyReferences.slotContentId;
+        }
+      } catch (e) { /* ignore */ }
+
+      figma.ui.postMessage({
+        type: 'CREATE_SLOT_RESULT',
+        requestId: msg.requestId,
+        success: true,
+        slot: {
+          id: newSlot.id,
+          name: newSlot.name,
+          type: newSlot.type,
+          propertyKey: slotPropertyKey,
+          width: newSlot.width,
+          height: newSlot.height,
+          layoutMode: newSlot.layoutMode
+        }
+      });
+    } catch (error) {
+      var createSlotError = error && error.message ? error.message : String(error);
+      console.error('🌉 [Desktop Bridge] Create slot error:', createSlotError);
+      figma.ui.postMessage({
+        type: 'CREATE_SLOT_RESULT',
+        requestId: msg.requestId,
+        success: false,
+        error: createSlotError
+      });
+    }
+  }
+
+  // GET_SLOTS — list SlotNode children on a component or instance
+  else if (msg.type === 'GET_SLOTS') {
+    try {
+      console.log('🌉 [Desktop Bridge] Getting slots for node:', msg.nodeId);
+
+      var targetNode = await figma.getNodeByIdAsync(msg.nodeId);
+      if (!targetNode) {
+        throw new Error('Node not found: ' + msg.nodeId);
+      }
+      if (targetNode.type !== 'COMPONENT' && targetNode.type !== 'INSTANCE' && targetNode.type !== 'COMPONENT_SET') {
+        throw new Error('Node must be a COMPONENT, COMPONENT_SET, or INSTANCE. Got: ' + targetNode.type);
+      }
+
+      var slotsResult = [];
+      if (targetNode.type === 'COMPONENT_SET') {
+        // Aggregate slots from all variant components
+        for (var vi = 0; vi < targetNode.children.length; vi++) {
+          var variant = targetNode.children[vi];
+          if (variant.type !== 'COMPONENT') continue;
+          var variantSlots = serializeSlotsFromNode(variant);
+          for (var vsi = 0; vsi < variantSlots.length; vsi++) {
+            variantSlots[vsi].variantId = variant.id;
+            variantSlots[vsi].variantName = variant.name;
+          }
+          slotsResult = slotsResult.concat(variantSlots);
+        }
+      } else {
+        slotsResult = serializeSlotsFromNode(targetNode);
+      }
+
+      figma.ui.postMessage({
+        type: 'GET_SLOTS_RESULT',
+        requestId: msg.requestId,
+        success: true,
+        data: {
+          nodeId: targetNode.id,
+          nodeType: targetNode.type,
+          slots: slotsResult,
+          count: slotsResult.length
+        }
+      });
+    } catch (error) {
+      var getSlotsError = error && error.message ? error.message : String(error);
+      console.error('🌉 [Desktop Bridge] Get slots error:', getSlotsError);
+      figma.ui.postMessage({
+        type: 'GET_SLOTS_RESULT',
+        requestId: msg.requestId,
+        success: false,
+        error: getSlotsError
+      });
+    }
+  }
+
+  // APPEND_TO_SLOT — clone or move a node into a slot (instances only for content population)
+  else if (msg.type === 'APPEND_TO_SLOT') {
+    try {
+      console.log('🌉 [Desktop Bridge] Appending to slot');
+
+      var slotNode = await resolveSlotNode(msg);
+      var slotParent = slotNode.parent;
+      if (!slotParent) {
+        throw new Error('Slot has no parent');
+      }
+
+      // Prepare the content FIRST — validation failures must not leave the
+      // slot half-mutated (clearExisting used to run before source resolution,
+      // so a bad sourceNodeId emptied the slot and then errored).
+      var appendedNode;
+      if (msg.sourceNodeId) {
+        var sourceNode = await figma.getNodeByIdAsync(msg.sourceNodeId);
+        if (!sourceNode) {
+          throw new Error('Source node not found: ' + msg.sourceNodeId);
+        }
+        // Guard BEFORE cloning — a clone of a ComponentNode is itself a
+        // ComponentNode, and cloning first leaks an orphan main component.
+        if (sourceNode.type === 'COMPONENT') {
+          throw new Error('ComponentNodes cannot be appended directly to a slot. Create an instance with createInstance() or clone an existing instance instead.');
+        }
+        if (msg.clone !== false) {
+          appendedNode = sourceNode.clone();
+        } else {
+          appendedNode = sourceNode;
+        }
+      } else if (msg.nodeType) {
+        var slotProps = msg.properties || {};
+        switch (msg.nodeType) {
+          case 'RECTANGLE':
+            appendedNode = figma.createRectangle();
+            break;
+          case 'ELLIPSE':
+            appendedNode = figma.createEllipse();
+            break;
+          case 'FRAME':
+            appendedNode = figma.createFrame();
+            break;
+          case 'TEXT':
+            appendedNode = figma.createText();
+            await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
+            appendedNode.fontName = { family: 'Inter', style: 'Regular' };
+            // Coerce: schema allows string|number; characters requires string.
+            // Check !== undefined so 0 and "0" are honored.
+            if (slotProps.text !== undefined) appendedNode.characters = String(slotProps.text);
+            break;
+          case 'LINE':
+            appendedNode = figma.createLine();
+            break;
+          case 'POLYGON':
+            appendedNode = figma.createPolygon();
+            break;
+          case 'STAR':
+            appendedNode = figma.createStar();
+            break;
+          case 'VECTOR':
+            appendedNode = figma.createVector();
+            break;
+          default:
+            throw new Error('Unsupported node type for slot content: ' + msg.nodeType);
+        }
+        if (slotProps.name) appendedNode.name = String(slotProps.name);
+        // Coerce to numbers and allow width-only / height-only resizes.
+        if (slotProps.width !== undefined || slotProps.height !== undefined) {
+          var rw = slotProps.width !== undefined ? Number(slotProps.width) : appendedNode.width;
+          var rh = slotProps.height !== undefined ? Number(slotProps.height) : appendedNode.height;
+          if (!isNaN(rw) && !isNaN(rh)) appendedNode.resize(rw, rh);
+        }
+      } else {
+        throw new Error('Provide sourceNodeId (to clone/move into slot) or nodeType (to create new content in slot)');
+      }
+
+      // Content is ready — NOW it is safe to clear existing children.
+      if (msg.clearExisting) {
+        var existingChildren = [];
+        try {
+          for (var ei = 0; ei < slotNode.children.length; ei++) {
+            existingChildren.push(slotNode.children[ei]);
+          }
+        } catch (e) { /* ignore */ }
+        for (var er = 0; er < existingChildren.length; er++) {
+          existingChildren[er].remove();
+        }
+      }
+
+      slotNode.appendChild(appendedNode);
+
+      // Cloned nodes keep their original x/y, which can land them outside the
+      // slot's visible bounds (live-validated: a clone from elsewhere on the
+      // page rendered invisible inside a 100×100 slot). In auto-layout slots
+      // Figma manages position; in NONE layout, snap to the slot origin.
+      if (slotNode.layoutMode === 'NONE' || !slotNode.layoutMode) {
+        try { appendedNode.x = 0; appendedNode.y = 0; } catch (e) { /* locked/readonly — leave as-is */ }
+      }
+
+      figma.ui.postMessage({
+        type: 'APPEND_TO_SLOT_RESULT',
+        requestId: msg.requestId,
+        success: true,
+        slot: { id: slotNode.id, name: slotNode.name },
+        appendedNode: {
+          id: appendedNode.id,
+          name: appendedNode.name,
+          type: appendedNode.type,
+          width: appendedNode.width,
+          height: appendedNode.height
+        }
+      });
+    } catch (error) {
+      var appendSlotError = error && error.message ? error.message : String(error);
+      console.error('🌉 [Desktop Bridge] Append to slot error:', appendSlotError);
+      figma.ui.postMessage({
+        type: 'APPEND_TO_SLOT_RESULT',
+        requestId: msg.requestId,
+        success: false,
+        error: appendSlotError
+      });
+    }
+  }
+
+  // RESET_SLOT — revert instance slot content to component default
+  else if (msg.type === 'RESET_SLOT') {
+    try {
+      console.log('🌉 [Desktop Bridge] Resetting slot');
+
+      var resetSlotNode = await resolveSlotNode(msg);
+      if (typeof resetSlotNode.resetSlot !== 'function') {
+        throw new Error('resetSlot() is not available on this node. Ensure Figma Desktop supports Slots (open beta).');
+      }
+
+      resetSlotNode.resetSlot();
+
+      figma.ui.postMessage({
+        type: 'RESET_SLOT_RESULT',
+        requestId: msg.requestId,
+        success: true,
+        slot: {
+          id: resetSlotNode.id,
+          name: resetSlotNode.name,
+          childCount: resetSlotNode.children ? resetSlotNode.children.length : 0
+        }
+      });
+    } catch (error) {
+      var resetSlotError = error && error.message ? error.message : String(error);
+      console.error('🌉 [Desktop Bridge] Reset slot error:', resetSlotError);
+      figma.ui.postMessage({
+        type: 'RESET_SLOT_RESULT',
+        requestId: msg.requestId,
+        success: false,
+        error: resetSlotError
       });
     }
   }
