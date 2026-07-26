@@ -11,11 +11,19 @@ permissions:
 
 jobs:
   publish:
+    # Only publish from a tag ref. The version-bump commit is also pushed to
+    # main; without this guard a main push would reach the verify step with
+    # GITHUB_REF_NAME=main and fail. Note: the bump commit must NOT carry
+    # [skip ci] — GitHub applies that to tag pushes too, which silently
+    # suppressed every tag-triggered run between v1.37.2 and v1.38.1.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Actions pinned to full commit SHAs (mutable tags can be repointed by
+      # the owner — see the trivy-action / kics-github-action compromises).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
@@ -29,12 +37,28 @@ jobs:
             exit 1
           fi
 
-      - run: npm ci
+      - name: Skip if this version is already on the registry
+        id: published
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "$PKG_NAME@$PKG_VERSION is already published — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - run: npm run build:local
+      - if: steps.published.outputs.skip == 'false'
+        run: npm ci
 
-      - run: npm run build:apps
+      - if: steps.published.outputs.skip == 'false'
+        run: npm run build:local
 
-      - run: npm publish --ignore-scripts
+      - if: steps.published.outputs.skip == 'false'
+        run: npm run build:apps
+
+      - if: steps.published.outputs.skip == 'false'
+        run: npm publish --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
