@@ -5,6 +5,43 @@ All notable changes to Figma Console MCP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.38.2] - 2026-07-29
+
+### Fixed
+
+- **"Server disconnected" — the MCP server's own reaper was terminating healthy servers.** If your MCP client kept dropping the Figma Console connection and reconnecting only bought you a few minutes, this was why. It affected every client equally (reproduced in both Claude Code and Claude Desktop) because the fault was server-side, and it is unrelated to the older Desktop Bridge plugin reconnect issues.
+  - **Primary cause: the liveness probe could never succeed.** The reaper probes a sibling's `/health` before deciding it is dead, but it requested `http://127.0.0.1:{port}` while the WebSocket server binds `localhost` — which Node resolves to the **IPv6 loopback** on dual-stack macOS (`lsof` shows `[::1]:9223`, with nothing listening on IPv4). curl therefore returned connection-refused for perfectly healthy servers, which the caller maps to "confirmed dead". Every kill-safety gate built on that probe was inverted from a protection into a rubber stamp — including the one written specifically to spare siblings after the machine wakes from sleep. Verified live on a server actively handling a session: `127.0.0.1` gave curl exit 7, `localhost` gave exit 0.
+  - **Port advertisement files were written non-atomically.** A plain truncate-then-write, re-run every 30s per instance while every sibling scans all ten files in the range. A reader landing in that window got a parse error — and both cleanup paths treated an unparseable file as "corrupt, delete it", with no liveness check. That stranded a healthy server as a port-holder with no port file.
+  - **The orphan path killed without asking.** A process holding a port with no port file was terminated outright, never probed, even though the probe helper already existed and the sibling code path used it.
+  - **A stranded server could never recover.** The heartbeat returned early when its own file was missing, so a server that lost its file stayed unadvertised permanently — and an unadvertised port-holder is exactly what the orphan path kills.
+  - **Fixes:** probe `localhost` so curl tries every resolved address; write port files atomically via temp-file + `rename`; never delete a file on a parse failure; health-probe before the orphan kill in both the sync and async paths; and re-advertise from the heartbeat when our own file has gone missing, guarded by in-process port ownership so it can never resurrect a file after clean shutdown or claim a port we do not hold.
+  - **Important:** this only protects **newly started** server processes. A server already running an older build keeps the broken probe and will still terminate healthy siblings — so after upgrading, fully restart your MCP clients rather than just reconnecting. On macOS/Linux you can confirm nothing stale is left with `pkill -f 'figma-console-mcp/dist/local.js'` before restarting.
+
+### Internal
+
+- Two existing tests asserted the unsafe behaviour (`should clean up corrupt files`) and now assert the file is preserved instead. Seven new regression tests cover probe addressing, atomic writes, heartbeat self-healing, and the orphan-path probe gate; each was verified to fail against the pre-fix source before the fix was applied. 1422 tests passing.
+
+
+## [1.38.1] - 2026-07-29
+
+### Fixed
+
+- **`figma_get_library_variables` always reported 0 collections, and `figma_import_library_variable` reported failed imports as successes.** Both tools have been broken since they shipped in v1.29.0 — neither has ever returned a correct result in any released version. If you subscribed a team library and this tool told you it found nothing, that was the bug, not your file.
+  - **Root cause.** `connector.executeCodeViaUI()` resolves to the Desktop Bridge envelope `{ success, result }` built by `handleResult()` in `ui.html`, never the injected script's bare return value. Both tools read the envelope directly, so `Array.isArray(envelope)` was always `false` (collections became `[]`), the `__error` sentinel landed at `.result.__error` and its guard was dead code, and `envelope.id` was always `undefined`.
+  - **Why it was easy to miss.** The failure presented as a *success* — an empty result with a plausible hint attached ("subscribe a library via Figma > Assets panel"), so it read as a legitimate negative answer rather than a fault. The import half was worse: the side effect still happened plugin-side, but the report came back as a success with `id: undefined`, so anyone scripting a bulk import could not distinguish a genuine failure from a real one.
+  - **Fix.** Both tools now unwrap via a shared `unwrapBridgeResult()`, which additionally maps a bridge-level `success: false` onto the `__error` path — so a plugin timeout surfaces as a real error instead of being swallowed as "0 collections". An import that yields no `id` is now an explicit error rather than a success.
+  - Audited all 26 `executeCodeViaUI` call sites across `src/`; every other caller already unwrapped correctly. Only these two were affected.
+  - Reported by **Isabella Minzly**, with an accurate root-cause diagnosis.
+
+### Changed
+
+- **`figma_import_library_variable` now returns `isError` on failure paths that previously reported success.** A failed import — bad key, unsubscribed library, plugin timeout, or any response carrying no variable `id` — is now a loud error carrying the underlying message. Callers that were checking only for the presence of `imported` should check `isError`. Successful imports are unchanged in shape, except that `imported` is now the variable itself rather than the bridge envelope that wrapped it.
+
+### Internal
+
+- **Bridge mocks in `tests/library-tools.test.ts` encoded a wire contract that does not exist.** They resolved `executeCodeViaUI` to the bare script value, which is why a total failure of both tools shipped green and stayed green for two months. All mocks now go through a `bridge()` helper that reproduces the real `{ success, result }` envelope, plus six regression tests asserting on the envelope shape specifically. The new tests were verified to fail against the pre-fix source (13 failures) before the fix was applied.
+
+
 ## [1.38.0] - 2026-07-25
 
 ### Added
@@ -1209,6 +1246,8 @@ Connection health protocol — agents no longer need custom health-check logic t
 - Real-time Figma Desktop Bridge plugin
 - Support for both local (stdio) and Cloudflare Workers deployment
 
+[1.38.2]: https://github.com/southleft/figma-console-mcp/compare/v1.38.1...v1.38.2
+[1.38.1]: https://github.com/southleft/figma-console-mcp/compare/v1.38.0...v1.38.1
 [1.38.0]: https://github.com/southleft/figma-console-mcp/compare/v1.37.1...v1.38.0
 [1.37.1]: https://github.com/southleft/figma-console-mcp/compare/v1.37.0...v1.37.1
 [1.37.0]: https://github.com/southleft/figma-console-mcp/compare/v1.36.0...v1.37.0

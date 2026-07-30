@@ -78,7 +78,7 @@ export class FigmaConsoleMCPv3 extends McpAgent {
 	server = (() => {
 		const s = new McpServer({
 			name: "Figma Console MCP",
-			version: "1.38.1",
+			version: "1.38.2",
 		});
 		// Identity wrap — every tool's response and thrown error gets stamped
 		// with our MCP name so cross-MCP attribution is unambiguous.
@@ -100,7 +100,7 @@ export class FigmaConsoleMCPv3 extends McpAgent {
 		refreshToken?: string;
 		expiresAt: number;
 	}> {
-		const env = this.env as Env;
+		const env = this.env as unknown as Env;
 
 		if (!env.FIGMA_OAUTH_CLIENT_ID || !env.FIGMA_OAUTH_CLIENT_SECRET) {
 			throw new Error("OAuth not configured on server");
@@ -937,7 +937,7 @@ export class FigmaConsoleMCPv3 extends McpAgent {
 			{},
 			async () => {
 				try {
-					const env = this.env as Env;
+					const env = this.env as unknown as Env;
 					const code = generatePairingCode();
 
 					// Create a unique DO ID for this relay session
@@ -981,7 +981,7 @@ export class FigmaConsoleMCPv3 extends McpAgent {
 		// Cloud Desktop Connector factory
 		// ================================================================
 		const getCloudDesktopConnector = async (): Promise<any> => {
-			const env = this.env as Env;
+			const env = this.env as unknown as Env;
 			const relayDoId = await this.ctx.storage.get<string>('relayDoId');
 			if (!relayDoId) {
 				throw new Error('No cloud relay session. Call figma_pair_plugin first to pair the Desktop Bridge plugin.');
@@ -1369,7 +1369,7 @@ export default {
 
 			const statelessServer = new McpServer({
 				name: "Figma Console MCP",
-				version: "1.38.1",
+				version: "1.38.2",
 			});
 			wrapServerForIdentity(statelessServer);
 
@@ -2167,7 +2167,7 @@ export default {
 				JSON.stringify({
 					status: "healthy",
 					service: "Figma Console MCP",
-					version: "1.38.1",
+					version: "1.38.2",
 					endpoints: {
 						mcp: ["/sse", "/mcp"],
 						oauth_mcp_spec: ["/.well-known/oauth-authorization-server", "/authorize", "/token", "/oauth/register"],
