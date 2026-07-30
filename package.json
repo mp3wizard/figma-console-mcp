@@ -48,12 +48,19 @@
 		"claude",
 		"cloudflare"
 	],
-	"author": "Southleft",
+	"author": "mp3wizard",
+	"contributors": [
+		"Southleft (https://github.com/southleft) — original author of figma-console-mcp"
+	],
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/southleft/figma-console-mcp.git"
+		"url": "https://github.com/mp3wizard/figma-console-mcp.git"
 	},
+	"bugs": {
+		"url": "https://github.com/mp3wizard/figma-console-mcp/issues"
+	},
+	"homepage": "https://github.com/mp3wizard/figma-console-mcp#readme",
 	"engines": {
 		"node": ">=18.0.0"
 	},

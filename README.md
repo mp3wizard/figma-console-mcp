@@ -1,10 +1,12 @@
 # Figma Console MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-Compatible-blue)](https://modelcontextprotocol.io/)
-[![npm](https://img.shields.io/npm/v/figma-console-mcp)](https://www.npmjs.com/package/figma-console-mcp)
+[![npm](https://img.shields.io/npm/v/%40mp3wizard%2Ffigma-console-mcp)](https://www.npmjs.com/package/@mp3wizard/figma-console-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Documentation](https://img.shields.io/badge/docs-docs.figma--console--mcp.southleft.com-0D9488)](https://docs.figma-console-mcp.southleft.com)
 [![Sponsor](https://img.shields.io/badge/Sponsor-southleft-ea4aaa?logo=github-sponsors&logoColor=white)](https://github.com/sponsors/southleft)
+
+> **Fork notice.** This is a fork of [southleft/figma-console-mcp](https://github.com/southleft/figma-console-mcp), published to npm as [`@mp3wizard/figma-console-mcp`](https://www.npmjs.com/package/@mp3wizard/figma-console-mcp). Original work by [Southleft](https://github.com/southleft) under MIT; the documentation site, hosted endpoints, and sponsor links below belong to upstream. Issues with *this* fork go to [mp3wizard/figma-console-mcp/issues](https://github.com/mp3wizard/figma-console-mcp/issues).
 
 > **Your design system as an API.** Model Context Protocol server that bridges design and development—giving AI assistants complete access to Figma for **extraction**, **creation**, **debugging**, and **bidirectional token sync**.
 
@@ -169,7 +171,7 @@ Create a simple frame with a blue background
 
 ```bash
 # Clone and build
-git clone https://github.com/southleft/figma-console-mcp.git
+git clone https://github.com/mp3wizard/figma-console-mcp.git
 cd figma-console-mcp
 npm install
 npm run build:local
@@ -873,7 +875,7 @@ The architecture supports adding new apps with minimal boilerplate — each app 
 ## 💻 Development
 
 ```bash
-git clone https://github.com/southleft/figma-console-mcp.git
+git clone https://github.com/mp3wizard/figma-console-mcp.git
 cd figma-console-mcp
 npm install
 
@@ -901,7 +903,7 @@ MIT - See [LICENSE](LICENSE) file for details.
 
 - 📚 **[Documentation Site](https://docs.figma-console-mcp.southleft.com)** — Complete guides, tutorials, and API reference
 - 📖 [Local Docs](docs/) — Documentation source files
-- 🐛 [Report Issues](https://github.com/southleft/figma-console-mcp/issues)
-- 💬 [Discussions](https://github.com/southleft/figma-console-mcp/discussions)
+- 🐛 [Report Issues](https://github.com/mp3wizard/figma-console-mcp/issues)
+- 💬 [Discussions](https://github.com/mp3wizard/figma-console-mcp/discussions)
 - 🌐 [Model Context Protocol](https://modelcontextprotocol.io/)
 - 🎨 [Figma API](https://www.figma.com/developers/api)
