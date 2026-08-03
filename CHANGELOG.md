@@ -5,6 +5,61 @@ All notable changes to Figma Console MCP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.1] - 2026-08-02
+
+Server-only. **No plugin re-import needed** — and if you were being told to re-import repeatedly after upgrading to 1.39.0, this is the fix for that.
+
+### Fixed
+
+- **An older server told a newer plugin to re-import, and the banner could never be cleared.** After upgrading, the Desktop Bridge could keep showing *"Plugin update available — re-import it in Figma"* no matter how many times you re-imported. Re-importing was the one thing that could not help: it only ever installs the same or a newer plugin.
+  - **Cause.** `computePluginUpdateAvailable()` was a bare inequality (`pluginVersion !== bundledPluginVersion`) with no direction check, so it fired when the connected plugin was *newer* than the server's bundled copy as readily as when it was older.
+  - **Why it is a normal state rather than an edge case.** The server occupies a port in the 9223–9232 range and several instances run at once (one per MCP client, and clients like Claude Desktop spawn more than one). `BUNDLED_PLUGIN_VERSION` is parsed once at module load, so every server still running from before an upgrade holds the old value in memory and nags a correctly-updated plugin. Reproduced live on the v1.39.0 release: four leftover v1.38.2 servers with 19 hours of uptime, each sending `PLUGIN_UPDATE_AVAILABLE` to a freshly re-imported 1.39.0 plugin.
+  - **Fix.** Compare direction with a new exported `compareSemver()` and flag only when the bundled copy is genuinely newer. An older server now stays quiet, since it has nothing to offer. Unparseable versions fall back to the previous inequality so an unusual build still prompts, and a plugin reporting no version at all is still flagged — both unchanged.
+  - **Workaround if you are on 1.39.0** and don't want to upgrade yet: quit the MCP clients holding the older server processes (they outlive the client that spawned them), leaving only servers on the current version.
+  - Close relative of the v1.33.1 false-banner bug, which corrected *which* version was compared but left the direction unchecked.
+
+### Internal
+
+- Nine new tests around the version handshake, including numeric-not-lexicographic ordering (`1.9.0` vs `1.10.0`) and the unparseable-version fallback. The three direction-specific cases were each verified to fail against the previous logic before the fix landed. 1452 tests passing.
+
+
+## [1.39.0] - 2026-08-02
+
+Multi-file work. If you keep several files of a design system open at once, you can now run the same code across them concurrently instead of switching the active file and repeating yourself. Based on community PR [#107](https://github.com/southleft/figma-console-mcp/pull/107) from [@Wolfr](https://github.com/Wolfr) (Johan Ronsse), who hit this driving nine files at once.
+
+**Plugin re-import is recommended but not required.** The new tools work with your existing plugin. Re-importing `manifest.json` additionally restores two response fields that a relay bug has been dropping (see Fixed).
+
+### Added
+
+- **`figma_execute_across_files` — run one script against several connected files at once, concurrently.** For cross-file consistency work: auditing every file in a multi-file design system for the same problem, or applying one mechanical fix across a known set. Replaces "open file, run plugin, repeat per file."
+  - Each file's code runs in that file's own plugin context, so failures are isolated — one file throwing or timing out doesn't affect the others. Results come back as a per-file map with `totalSucceeded` / `totalFailed`, and the call is only reported as an error if *every* targeted file failed.
+  - Per-file timeouts apply independently. Verified live across four files: 4 × 2s of work completed in ~3.0s wall clock with all four dispatches starting within 5ms of each other, versus ~8s if it were serialized.
+  - **You must say which files to target** — pass `fileKeys`, or `allFiles: true`. There is deliberately no "everything by default": this executes arbitrary code in files you may be actively editing, including one pinned by target lock, so hitting all of them is a decision rather than what happens when you leave a parameter out. Naming files explicitly is strongly preferred for anything that writes.
+  - Requested keys that aren't connected come back in `missingFileKeys` without preventing the rest from running.
+  - Local Mode only — Cloud Mode pairs with exactly one plugin instance.
+- **`figma_execute` accepts an optional `fileKey`.** Runs against one specific connected file without changing the active file or releasing target lock, so an agent can work in file A while you work in file B. Get connected keys from `figma_list_open_files`. Local Mode only.
+
+### Changed
+
+- **The transport was already concurrent; nothing was using it.** `sendCommand` has accepted a target file key all along, pending requests are keyed by request id, and the plugin's relay hop is id-keyed too — no layer ever serialized. The gap was that no tool threaded a file key down to it. This release is additive at the tool layer; transport, target lock, and port discovery are untouched.
+- **Cloud Mode now rejects `fileKey` instead of ignoring it.** The write tools are shared between Local and Cloud, so the new parameter is visible in both. Cloud pairs with a single plugin instance and cannot honor it — silently running against the paired file would have reported a successful write to the wrong file with nothing in the response to reveal it.
+
+### Fixed
+
+- **The Desktop Bridge relay silently dropped `resultAnalysis` and `fileContext` from every `figma_execute` response.** `handleResult()` in `ui.html` rebuilds the plugin's message field by field rather than forwarding it, and neither field was on the list. `code.js` has sent both for a long time; neither has ever reached the server in any released version.
+  - **`figma_execute`'s own tool description instructs callers to "check `resultAnalysis.warning` for silent failures"** — that field never arrived, so the guidance has been unfollowable since it was written. `fileContext` reports which file the code actually ran in, which is what makes per-file targeting verifiable rather than assumed.
+  - **Why it survived this long:** the server-side tests mock the connector, so they asserted a contract the transport doesn't honor and passed regardless. Same failure mode as the v1.38.1 bridge-envelope bug. It surfaced here only because live multi-file testing expected `fileContext` and found it missing.
+  - **Requires re-importing `manifest.json`** to take effect — Figma caches plugin files at the app level. Everything else in this release works without it, and mixed plugin versions degrade cleanly: un-reimported files still return correct results, just without these two fields.
+  - Added `tests/relay-field-passthrough.test.ts`, which reads the real plugin files and asserts every field `code.js` sends on `EXECUTE_CODE_RESULT` is relayed — so the next field added fails a test instead of vanishing. Confirmed it fails when the passthrough is removed.
+- **A connected file reporting no file key could have had its script redirected to the active file.** An absent key fell through to the transport's active-file default, which would have run the code against that file a second time and reported it as a success. Unreachable in practice — a client without a file key is never registered — but it failed in the wrong direction. Such files are now skipped and listed in `skippedUnidentifiedFiles`.
+
+### Internal
+
+- **`scripts/release.sh` created the GitHub Release before the version bump was committed.** `gh release create` on a tag that doesn't exist yet builds one from the remote default branch head — the commit *without* the bump — and that tag push fires the publish workflow against a tree still carrying the previous version. It also captured the CHANGELOG section while it was still an empty scaffold. The step now defers with the exact command to run after tagging. Caught during this release; the mis-triggered run was cancelled before it published.
+- **The npm auth precheck is advisory rather than a hard gate.** Publishing has run in CI via Trusted Publishing / OIDC since v1.38.x, so an expired local token can't block a release that never touches it. It still warns, since the token matters for the manual fallback.
+- 52 suites / 1443 tests passing.
+
+
 ## [1.38.2] - 2026-07-29
 
 ### Fixed
@@ -1246,6 +1301,8 @@ Connection health protocol — agents no longer need custom health-check logic t
 - Real-time Figma Desktop Bridge plugin
 - Support for both local (stdio) and Cloudflare Workers deployment
 
+[1.39.1]: https://github.com/southleft/figma-console-mcp/compare/v1.39.0...v1.39.1
+[1.39.0]: https://github.com/southleft/figma-console-mcp/compare/v1.38.2...v1.39.0
 [1.38.2]: https://github.com/southleft/figma-console-mcp/compare/v1.38.1...v1.38.2
 [1.38.1]: https://github.com/southleft/figma-console-mcp/compare/v1.38.0...v1.38.1
 [1.38.0]: https://github.com/southleft/figma-console-mcp/compare/v1.37.1...v1.38.0

@@ -4,7 +4,7 @@ description: "Your design system as an API. Connect AI to Figma for extraction, 
 ---
 
 <Note>
-**New in v1.38.2 — Connection Stability Fix:** If your MCP client kept showing **"Server disconnected"**, this release fixes it. The server's own orphan reaper was terminating *healthy* servers: its `/health` liveness probe requested `127.0.0.1` while the server binds `localhost`, which resolves to the **IPv6 loopback** on dual-stack macOS — so the probe reported "nothing responding" for every healthy instance, inverting every kill-safety gate into a rubber stamp. Also fixes non-atomic port-file writes, deletion of port files on a transient read error, and an orphan path that terminated processes without probing them. Affected all MCP clients equally (server-side, unrelated to the Desktop Bridge plugin). **Fully restart your MCP clients after upgrading** — a server still running an older build keeps the broken probe and will terminate healthy siblings. Server-only — **no plugin re-import needed**. [See what's new →](https://github.com/southleft/figma-console-mcp/blob/main/CHANGELOG.md#1382---2026-07-29)
+**New in v1.39.0 (patched v1.39.1) — Multi-File Execution:** Work across several Figma files at once. `figma_execute_across_files` runs one script against every (or a chosen subset of) connected file **concurrently** — for auditing a multi-file design system for the same problem, or applying one fix across a known set, instead of switching the active file and repeating yourself. Four files × 2s of work completes in ~3s, not ~8s. `figma_execute` also takes an optional `fileKey` to target a single file without moving the active file or releasing target lock. You must name `fileKeys` or pass `allFiles: true` — there's no fan-out-to-everything default, since this runs code in files you may be actively editing. From community PR [#107](https://github.com/southleft/figma-console-mcp/pull/107) by [@Wolfr](https://github.com/Wolfr). Also fixes a relay bug that silently dropped `resultAnalysis` and `fileContext` from every `figma_execute` response — **re-import `manifest.json`** for those two fields; everything else works without it.  **Patched in v1.39.1:** if the plugin kept telling you to re-import no matter how many times you did, that was an older server instance nagging a newer plugin — an unfixable banner, now silenced. [See what's new →](https://github.com/southleft/figma-console-mcp/blob/main/CHANGELOG.md#1391---2026-08-02)
 </Note>
 
 # Your Design System as an API
@@ -216,7 +216,7 @@ Real component data. Real token values. Real code that uses your actual design s
 
 <Columns cols={3}>
   <Card title="NPX Setup (Recommended)" icon="bolt" href="/setup#-npx-setup-recommended">
-    **Full capabilities — 113 tools**
+    **Full capabilities — 114 tools**
 
     All tools including real-time monitoring. Requires Node.js and a Figma token.
   </Card>
@@ -284,7 +284,7 @@ Real component data. Real token values. Real code that uses your actual design s
     Real scenarios and workflows
   </Card>
   <Card title="All Tools" icon="wrench" href="/tools">
-    Complete reference for 113 tools
+    Complete reference for 114 tools
   </Card>
   <Card title="Troubleshooting" icon="circle-question" href="/troubleshooting">
     Common issues and solutions
