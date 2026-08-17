@@ -1,6 +1,6 @@
 {
 	"name": "@mp3wizard/figma-console-mcp",
-	"version": "1.39.2",
+	"version": "1.40.0",
 	"description": "The most comprehensive MCP server for Figma — design tokens, variables, components, write tools, version history diff, accessibility audits, FigJam, Slides, and more. Local (WebSocket Desktop Bridge plugin) and Cloudflare Workers (paired + remote) modes.",
 	"type": "module",
 	"main": "dist/local.js",
@@ -91,7 +91,7 @@
 		"typescript": "5.9.3",
 		"vite": "^6.4.2",
 		"vite-plugin-singlefile": "^2.0.0",
-		"wrangler": "4.72.0",
+		"wrangler": "4.123.0",
 		"zod-to-json-schema": "^3.25.1"
 	},
 	"overrides": {
@@ -101,10 +101,10 @@
 		"lodash": ">=4.18.0",
 		"path-to-regexp": ">=8.4.0",
 		"picomatch": ">=4.0.4",
-		"undici": "^7.24.5",
-		"ip-address": ">=10.1.1",
+		"undici": ">=7.29.0 <8",
+		"ip-address": ">=10.4.0 <11",
 		"brace-expansion": ">=5.0.8",
-		"hono": ">=4.12.18",
+		"hono": ">=4.12.34 <5",
 		"@hono/node-server": ">=2.0.5",
 		"postcss": ">=8.5.18",
 		"qs": ">=6.15.2",
@@ -113,8 +113,9 @@
 		"express-rate-limit": ">=8.5.1",
 		"esbuild": ">=0.28.1",
 		"@babel/core": ">=7.29.6",
-		"js-yaml": ">=4.2.0",
+		"js-yaml": ">=4.3.1 <5",
 		"body-parser": ">=2.3.0",
-		"sharp": ">=0.35.0"
+		"sharp": ">=0.35.0",
+		"nanoid": ">=5.1.16 <6"
 	}
 }
