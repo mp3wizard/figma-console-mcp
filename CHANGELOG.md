@@ -5,6 +5,24 @@ All notable changes to Figma Console MCP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.4] - 2026-09-21
+
+Dependency and version-reporting fixes for the `@mp3wizard` fork. No tool behavior changes.
+
+### Fixed
+
+- **Two high-severity `extract-zip` advisories removed from the dependency tree** (GHSA-jmr9-qjv8-65gv and GHSA-7pqw-9j4j-h8q3, both CVSS 8.1 symlink path traversal / arbitrary file write). No patched `extract-zip` exists — every published version is in the vulnerable range — and `npm audit fix --force` offered only a downgrade of `@cloudflare/puppeteer` to 0.0.11. Instead, an `@puppeteer/browsers: ">=3.0.2"` override drops the dependency entirely: 3.x replaced `extract-zip` with `modern-tar`. `npm audit` now reports 0 vulnerabilities, and the lockfile loses 50 packages. Note that the advisories were never reachable from this package — the Cloudflare entry point requires only `cloudflare/*` modules, and `extract-zip` is used solely by the browser-download path in `install.js`, which is never invoked here.
+- **The server reported the wrong version over MCP.** The three `version` strings in `src/index.ts` and `MCP_VERSION` in `src/core/tokens-tools.ts` were left at `1.40.2` during the 1.40.3 bump, so 1.40.3 identified itself as 1.40.2 in the initialize handshake and in health output. All four now track `package.json`.
+
+## [1.40.3] - 2026-09-21
+
+Merge of upstream v1.40.1 and v1.40.2 into the `@mp3wizard` fork, plus a security-override refresh. No tool behavior changes beyond what those upstream releases carry.
+
+### Changed
+
+- Merged upstream `figma_generate_component_doc` variant-accuracy fixes (v1.40.1) and the `figma_export_tokens` data-loss fixes (v1.40.2). See those entries below.
+- Refreshed transitive dependency overrides (`fast-uri`, `hono`, `qs`, `js-yaml`, `sharp`, `browserslist`, `baseline-browser-mapping`) and added `@ai-sdk/provider-utils: ">=4.0.33 <5"` — the bound matters, since an unpinned range pulls 5.x into `ai@6`.
+
 ## [1.40.2] - 2026-09-18
 
 Data-loss fix for `figma_export_tokens`. **If you export into token files you care about, upgrade.** Server-only: no plugin re-import needed.
@@ -1361,6 +1379,8 @@ Connection health protocol — agents no longer need custom health-check logic t
 - Real-time Figma Desktop Bridge plugin
 - Support for both local (stdio) and Cloudflare Workers deployment
 
+[1.40.4]: https://github.com/mp3wizard/figma-console-mcp/compare/v1.40.3...v1.40.4
+[1.40.3]: https://github.com/mp3wizard/figma-console-mcp/compare/v1.40.2...v1.40.3
 [1.40.2]: https://github.com/southleft/figma-console-mcp/compare/v1.40.1...v1.40.2
 [1.40.1]: https://github.com/southleft/figma-console-mcp/compare/v1.40.0...v1.40.1
 [1.40.0]: https://github.com/southleft/figma-console-mcp/compare/v1.39.1...v1.40.0

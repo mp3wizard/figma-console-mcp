@@ -1,6 +1,6 @@
 {
 	"name": "@mp3wizard/figma-console-mcp",
-	"version": "1.40.3",
+	"version": "1.40.4",
 	"description": "The most comprehensive MCP server for Figma — design tokens, variables, components, write tools, version history diff, accessibility audits, FigJam, Slides, and more. Local (WebSocket Desktop Bridge plugin) and Cloudflare Workers (paired + remote) modes.",
 	"type": "module",
 	"main": "dist/local.js",
@@ -119,6 +119,7 @@
 		"nanoid": ">=5.1.16 <6",
 		"browserslist": ">=4.28.7",
 		"baseline-browser-mapping": ">=2.11.0",
-		"@ai-sdk/provider-utils": ">=4.0.33 <5"
+		"@ai-sdk/provider-utils": ">=4.0.33 <5",
+		"@puppeteer/browsers": ">=3.0.2"
 	}
 }
