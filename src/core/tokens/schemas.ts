@@ -82,7 +82,7 @@ export const ExportTokensInputSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Filesystem path to write the output file(s) to. Relative paths resolve against the project root (the directory containing tokens.config.json) or cwd if no config. When omitted, the output is returned inline in the response (suitable for the AI to inspect or write via its own file tools).",
+      "Where to write the output. Treated as a DIRECTORY by default — each generated file (e.g. tokens.tokens.json, tokens.css) is written inside it and the directory is created if missing. Treated as a FILE when it is an existing file or ends in a token-file extension (.json, .css, .scss, .less, .ts, .js): the export must then produce exactly ONE file (one format, no splitByMode/splitByCollection — combine with collectionIds to re-export a single collection into e.g. typography.tokens.json), which is written at exactly that path, overwriting it. A file path combined with a multi-file export is rejected with an explanatory error before anything is written. End the path with '/' to force directory handling. Relative paths resolve against the project root (the directory containing tokens.config.json) or cwd if no config. When omitted, the output is returned inline in the response (suitable for the AI to inspect or write via its own file tools).",
     ),
   configPath: z
     .string()
@@ -91,7 +91,7 @@ export const ExportTokensInputSchema = z.object({
       "Explicit path to a tokens.config.json file. When omitted, the tool walks up from cwd looking for one — typical case is zero-arg.",
     ),
   strategy: SyncStrategySchema.optional().describe(
-    "How to handle existing output files. 'merge' (default) diffs against current contents and writes only changed tokens, preserving code-only additions. 'replace' wipes and rewrites. 'dry-run' computes the diff and reports what would change without writing.",
+    "How to handle existing output files. Export always replaces a target file's contents with the current Figma state — it does not merge token-by-token. 'merge' (default) is the SAFE mode: it refuses to write, leaving the file untouched, if overwriting an existing DTCG file would delete tokens the export does not manage (hand-added tokens, or tokens from collections not included in this export). 'replace' overwrites unconditionally. 'dry-run' reports what would be written without writing.",
   ),
   prefix: z
     .string()
