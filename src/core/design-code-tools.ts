@@ -7,7 +7,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { FigmaAPI } from "./figma-api.js";
-import { extractFileKey } from "./figma-api.js";
+import { extractFileKey, withTimeout } from "./figma-api.js";
 import { createChildLogger } from "./logger.js";
 import { EnrichmentService } from "./enrichment/index.js";
 import type { EnrichmentOptions, EnrichedComponent } from "./types/enriched.js";
@@ -144,6 +144,21 @@ export function chunkMarkdownByHeaders(markdown: string): Array<{ heading: strin
  * Clean a raw Figma variant name like "Type=Image, Size=12" into "Image / 12".
  * Extracts just the values from "Key=Value" pairs, joined by " / ".
  */
+/**
+ * How many levels of a component's tree the doc tool fetches and walks. The REST
+ * fetch counts from the requested node, so for a COMPONENT_SET one level is
+ * spent on the variants themselves. Anything deeper is cut off by the API — and
+ * REST returns a cut-off container as `children: []`, indistinguishable from an
+ * empty frame, so the walkers report when they reach this limit.
+ */
+export const DOC_TREE_DEPTH = 8;
+
+/** Depth used when the deep fetch fails or times out — the pre-1.40.3 behavior */
+const SHALLOW_FETCH_DEPTH = 4;
+const DEEP_FETCH_TIMEOUT_MS = 45_000;
+
+const BOOLEAN_LIKE_VALUE = /^(true|false|yes|no|on|off)$/i;
+
 export function cleanVariantName(rawName: string): string {
 	// Match Key=Value pairs separated by comma/space
 	const pairs = rawName.match(/(\w[\w\s]*)=([^,]+)/g);
@@ -151,7 +166,10 @@ export function cleanVariantName(rawName: string): string {
 
 	const values = pairs.map((p) => {
 		const eqIdx = p.indexOf("=");
-		return p.slice(eqIdx + 1).trim();
+		const value = p.slice(eqIdx + 1).trim();
+		// "False" is not a name. A boolean-like value only means something next to
+		// its property: "Is scrollable=False", "Hover / Is Selected=True".
+		return BOOLEAN_LIKE_VALUE.test(value) ? `${p.slice(0, eqIdx).trim()}=${value}` : value;
 	});
 	return values.join(" / ");
 }
@@ -364,6 +382,8 @@ interface VariantColorEntry {
 	variableName?: string;
 	/** For icon artwork: layer name of the icon instance this color belongs to */
 	iconLabel?: string;
+	/** The layer (or an ancestor) has `visible: false` — real design intent, but not painted */
+	hidden?: boolean;
 }
 
 /** Color data collected from a specific variant */
@@ -383,6 +403,8 @@ interface VariantColorData {
 	iconColors: VariantColorEntry[];
 	strokes: VariantColorEntry[];
 	textColors: VariantColorEntry[];
+	/** Shadows, blurs and layer opacity — `hex` holds the description */
+	effects: VariantColorEntry[];
 	icons: Array<{
 		/** Main component name when resolvable, else the cleaned layer name */
 		name: string;
@@ -390,6 +412,8 @@ interface VariantColorData {
 		layerName?: string;
 		/** INSTANCE_SWAP property driving this instance — the icon is a default, not fixed */
 		swapProperty?: string;
+		/** The icon layer is hidden in this variant (typically toggled by a boolean property) */
+		hidden?: boolean;
 	}>;
 }
 
@@ -413,6 +437,30 @@ interface TextStyleData {
 	lineHeight: number;
 	letterSpacing: number;
 	variableBindings?: Record<string, string>;
+	/** The text layer (or an ancestor) is hidden */
+	hidden?: boolean;
+	/** The layer mixes styles (e.g. a bolded word) — the values shown are its base style only */
+	mixed?: boolean;
+}
+
+/**
+ * id → token name. Two collections can each hold a variable with the SAME name
+ * ("Primitive/2x" in both Spacing and Radius), which is ambiguous to paste into
+ * code — those, and only those, are qualified with their collection. Every other
+ * token keeps the plain name people already map to code.
+ */
+export function buildVariableNameMap(variables: any[], collections?: any[]): Map<string, string> {
+	const collectionNames = new Map<string, string>();
+	if (Array.isArray(collections)) for (const c of collections) if (c?.id && c?.name) collectionNames.set(c.id, c.name);
+	const nameCounts = new Map<string, number>();
+	for (const v of variables) if (v?.name) nameCounts.set(v.name, (nameCounts.get(v.name) ?? 0) + 1);
+	const out = new Map<string, string>();
+	for (const v of variables) {
+		if (!v?.id || !v?.name) continue;
+		const collection = collectionNames.get(v.variableCollectionId);
+		out.set(v.id, (nameCounts.get(v.name) ?? 0) > 1 && collection ? `${collection}/${v.name}` : v.name);
+	}
+	return out;
 }
 
 /** Strip Figma's internal "#123:4" id suffix from a component property name */
@@ -431,6 +479,46 @@ export function resolveMainComponentName(componentId: string | undefined, lookup
 	const setName = comp.componentSetId ? lookup.componentSets?.[comp.componentSetId]?.name : undefined;
 	if (setName) return `${setName} (${cleanVariantName(comp.name)})`;
 	return comp.name;
+}
+
+/**
+ * Describe a visible paint as a table value. Solid paints are a hex; anything
+ * else is named rather than dropped — silence would read as "nothing there".
+ */
+function describePaint(paint: any): string | null {
+	if (!paint || paint.visible === false) return null;
+	if (paint.type === "SOLID") {
+		if (!paint.color) return null;
+		return figmaRGBAToHex({ ...paint.color, a: paint.opacity ?? paint.color.a ?? 1 });
+	}
+	if (typeof paint.type === "string" && paint.type.startsWith("GRADIENT_")) {
+		const kind = paint.type.replace("GRADIENT_", "").toLowerCase();
+		const stops: any[] = Array.isArray(paint.gradientStops) ? paint.gradientStops : [];
+		const stopHexes = stops
+			.filter((st) => st?.color)
+			.map((st) => figmaRGBAToHex({ ...st.color, a: st.color.a ?? 1 }));
+		const detail = stopHexes.length > 0 ? `: ${stopHexes.join(" → ")}` : "";
+		return `${kind} gradient (${stops.length} stops${detail})`;
+	}
+	if (paint.type === "IMAGE") return "image fill";
+	if (paint.type === "VIDEO") return "video fill";
+	if (paint.type === "PATTERN") return "pattern fill";
+	return typeof paint.type === "string" ? `${paint.type.toLowerCase()} paint` : null;
+}
+
+/** Describe a visible effect (shadow / blur) as a table value */
+function describeEffect(effect: any): string | null {
+	if (!effect || effect.visible === false || typeof effect.type !== "string") return null;
+	if (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") {
+		const color = effect.color ? figmaRGBAToHex({ ...effect.color, a: effect.color.a ?? 1 }).toUpperCase() : "";
+		// Scaled instances produce values like 0.39000001549720764
+		const n = (v: number | undefined) => Math.round((v ?? 0) * 100) / 100;
+		return `${effect.type === "DROP_SHADOW" ? "drop" : "inner"} shadow: x ${n(effect.offset?.x)} · y ${n(effect.offset?.y)} · blur ${n(effect.radius)} · spread ${n(effect.spread)}${color ? ` · ${color}` : ""}`;
+	}
+	const radius = Math.round((effect.radius ?? 0) * 100) / 100;
+	if (effect.type === "LAYER_BLUR") return `layer blur ${radius}px`;
+	if (effect.type === "BACKGROUND_BLUR") return `background blur ${radius}px`;
+	return `${effect.type.toLowerCase().replace(/_/g, " ")} effect`;
 }
 
 /** Largest dimension (px) an instance-swap slot can have and still be treated as an icon */
@@ -464,18 +552,36 @@ function detectIconInstance(node: any, lookup: ComponentLookup): VariantColorDat
 	if (!nameSaysIcon && !(swapProperty && iconSized)) return null;
 
 	const cleanedLayerName = layerName.replace(/^icon\s*\/?\s*/i, "").trim() || layerName;
+	// Many systems wrap the glyph: an "Icon (small)" instance whose only job is to
+	// hold a swappable "MagnifyingGlass". The wrapper says nothing about WHICH icon
+	// this is — the instance nested inside it does.
+	const glyph = findNestedGlyphName(node, lookup);
 	return {
-		name: mainName || cleanedLayerName,
+		name: glyph || mainName || cleanedLayerName,
 		type: "instance",
 		layerName,
 		...(swapProperty ? { swapProperty } : {}),
 	};
 }
 
-/** True when the node has at least one visible solid fill */
+/** Name of the first instance nested inside an icon wrapper (breadth-first, ≤3 levels) */
+function findNestedGlyphName(icon: any, lookup: ComponentLookup): string | undefined {
+	let level: any[] = Array.isArray(icon.children) ? icon.children : [];
+	for (let depth = 0; depth < 3 && level.length > 0; depth++) {
+		for (const child of level) {
+			if (child.type === "INSTANCE") {
+				const name = resolveMainComponentName(child.componentId, lookup);
+				if (name) return name;
+			}
+		}
+		level = level.flatMap((c) => (Array.isArray(c.children) ? c.children : []));
+	}
+	return undefined;
+}
+
+/** True when the node has at least one visible paint (solid, gradient, image…) */
 function hasVisibleSolidFill(node: any): boolean {
-	return Array.isArray(node?.fills)
-		&& node.fills.some((f: any) => f.type === "SOLID" && f.color && f.visible !== false);
+	return Array.isArray(node?.fills) && node.fills.some((f: any) => describePaint(f) !== null);
 }
 
 /**
@@ -525,13 +631,14 @@ export function collectAllVariantData(
 			iconColors: [],
 			strokes: [],
 			textColors: [],
+			effects: [],
 			icons: [],
 		};
 
 		const backgroundLayer = findBackgroundLayer(variant);
 		if (backgroundLayer) data.backgroundLayer = backgroundLayer.name || "background layer";
 
-		walkVariantNode(variant, data, { varNameMap, lookup, backgroundLayer }, 0, 5, null);
+		walkVariantNode(variant, data, { varNameMap, lookup, backgroundLayer }, 0, DOC_TREE_DEPTH, null);
 		variants.push(data);
 	}
 
@@ -554,28 +661,35 @@ function walkVariantNode(
 	maxDepth: number,
 	/** Label of the icon instance we're inside of, or null when outside any icon */
 	insideIcon: string | null,
+	/** An ancestor is hidden, so nothing beneath it paints either */
+	ancestorHidden: boolean = false,
 ): void {
 	if (depth > maxDepth) return;
 
 	const isText = node.type === "TEXT";
+	// Hidden layers are COLLECTED, not skipped: a hidden focus ring is real design
+	// intent. They are labeled so a reader can tell it from what actually renders.
+	const hidden = ancestorHidden || node.visible === false;
 
 	// Icons are reported once, at the outermost instance — everything beneath it
 	// (vectors, nested instances) is that icon's artwork, not a separate icon.
 	if (insideIcon === null) {
 		const icon = detectIconInstance(node, ctx.lookup);
 		if (icon) {
-			data.icons.push(icon);
+			data.icons.push(hidden ? { ...icon, hidden: true } : icon);
 			insideIcon = icon.layerName || icon.name;
 		}
 	}
 
-	const toEntry = (paint: any): VariantColorEntry => {
+	const toEntry = (paint: any, value: string): VariantColorEntry => {
 		const varId = paint.boundVariables?.color?.id;
 		return {
-			hex: figmaRGBAToHex({ ...paint.color, a: paint.opacity ?? paint.color.a ?? 1 }),
-			nodeName: node.name || "",
+			hex: value,
+			// The variant root's own name is "Size=lg, State=hover" — not a layer name
+			nodeName: depth === 0 ? "" : node.name || "",
 			variableId: varId,
 			variableName: varId ? ctx.varNameMap.get(varId) : undefined,
+			...(hidden ? { hidden: true } : {}),
 		};
 	};
 
@@ -584,8 +698,9 @@ function walkVariantNode(
 	// transparent variant gets documented with its icon's color as the surface.
 	if (node.fills && Array.isArray(node.fills)) {
 		for (const fill of node.fills) {
-			if (fill.type === "SOLID" && fill.color && fill.visible !== false) {
-				const entry = toEntry(fill);
+			const value = describePaint(fill);
+			if (value) {
+				const entry = toEntry(fill, value);
 				if (isText) {
 					data.textColors.push(entry);
 				} else if (insideIcon !== null) {
@@ -602,8 +717,9 @@ function walkVariantNode(
 	// Collect strokes
 	if (node.strokes && Array.isArray(node.strokes)) {
 		for (const stroke of node.strokes) {
-			if (stroke.type === "SOLID" && stroke.color && stroke.visible !== false) {
-				const entry = toEntry(stroke);
+			const value = describePaint(stroke);
+			if (value) {
+				const entry = toEntry(stroke, value);
 				if (insideIcon !== null) {
 					data.iconColors.push({ ...entry, iconLabel: insideIcon });
 				} else {
@@ -613,10 +729,27 @@ function walkVariantNode(
 		}
 	}
 
+	// Effects and opacity — outside icon artwork, which has its own internals
+	if (insideIcon === null || depth === 0) {
+		if (Array.isArray(node.effects)) {
+			for (const effect of node.effects) {
+				const value = describeEffect(effect);
+				if (value) data.effects.push(toEntry(effect, value));
+			}
+		}
+		if (typeof node.opacity === "number" && node.opacity < 1) {
+			data.effects.push({
+				...toEntry({}, `opacity ${Math.round(node.opacity * 100)}%`),
+				variableId: node.boundVariables?.opacity?.id,
+				variableName: node.boundVariables?.opacity?.id ? ctx.varNameMap.get(node.boundVariables.opacity.id) : undefined,
+			});
+		}
+	}
+
 	// Recurse into children
 	if (node.children && Array.isArray(node.children)) {
 		for (const child of node.children) {
-			walkVariantNode(child, data, ctx, depth + 1, maxDepth, insideIcon);
+			walkVariantNode(child, data, ctx, depth + 1, maxDepth, insideIcon, hidden);
 		}
 	}
 }
@@ -624,14 +757,22 @@ function walkVariantNode(
 /**
  * Collect typography data from all text nodes in a component tree.
  */
-export function collectTypographyData(node: any, depth: number = 0, maxDepth: number = 5): TextStyleData[] {
+export function collectTypographyData(
+	node: any,
+	depth: number = 0,
+	maxDepth: number = DOC_TREE_DEPTH,
+	ancestorHidden: boolean = false,
+): TextStyleData[] {
 	const results: TextStyleData[] = [];
 	if (depth > maxDepth) return results;
 
-	// For COMPONENT_SET, walk the default (first) variant
+	// A COMPONENT_SET resolves to its default (first) variant HERE ONLY. Anything
+	// documenting a set must use collectTypographyAcrossVariants — variants
+	// routinely differ in weight (a selected tab is SemiBold, the rest Regular).
 	if (node.type === "COMPONENT_SET" && node.children?.length > 0 && depth === 0) {
 		return collectTypographyData(node.children[0], 0, maxDepth);
 	}
+	const hidden = ancestorHidden || node.visible === false;
 
 	if (node.type === "TEXT" && node.style) {
 		const s = node.style;
@@ -647,23 +788,92 @@ export function collectTypographyData(node: any, depth: number = 0, maxDepth: nu
 			fontSize: s.fontSize || 14,
 			lineHeight: s.lineHeightPx || s.fontSize || 14,
 			letterSpacing: s.letterSpacing || 0,
+			...(hidden ? { hidden: true } : {}),
+			// REST: characterStyleOverrides maps characters → styleOverrideTable ids; any
+			// non-zero entry means part of the text departs from `style`
+			...(Array.isArray(node.characterStyleOverrides) && node.characterStyleOverrides.some((id: number) => id !== 0)
+				? { mixed: true } : {}),
 		});
 	}
 
 	if (node.children && Array.isArray(node.children)) {
 		for (const child of node.children) {
-			results.push(...collectTypographyData(child, depth + 1, maxDepth));
+			results.push(...collectTypographyData(child, depth + 1, maxDepth, hidden));
 		}
 	}
 
 	return results;
 }
 
+/** One row of the typography table: a text element in one style, and where it applies */
+export interface TypographyRow {
+	style: TextStyleData;
+	/** Empty when every variant uses this style; otherwise which variants do */
+	scope: string;
+}
+
+// `hidden` and `mixed` belong in the signature: a label shown in one variant and
+// hidden in another is NOT "the same in all variants".
+const typographySignature = (ts: TextStyleData) =>
+	`${ts.fontFamily}|${ts.fontWeight}|${ts.fontSize}|${ts.lineHeight}|${ts.letterSpacing}|${ts.hidden ? "hidden" : ""}|${ts.mixed ? "mixed" : ""}`;
+
+/**
+ * Typography for EVERY variant of a set. Per text element: one row when all
+ * variants agree, otherwise one row per distinct style, scoped by the variant
+ * property that drives it ("Is Selected=True") or, failing that, by variant name.
+ */
+export function collectTypographyAcrossVariants(setNode: any): TypographyRow[] {
+	const variants: any[] = Array.isArray(setNode?.children) ? setNode.children : [];
+	// A row's identity is (element name, style) — NOT its position in the tree.
+	// Positional identity ("text-8 #4") made ten nav items' badges ten separate
+	// elements, each with its own scope, and printed the same fact three times.
+	const rowKey = (ts: TextStyleData) => `${ts.nodeName}|${typographySignature(ts)}`;
+	const perVariant = variants.map((v) => {
+		const keys = new Map<string, TextStyleData>();
+		for (const ts of collectTypographyData(v)) if (!keys.has(rowKey(ts))) keys.set(rowKey(ts), ts);
+		return { name: cleanVariantName(v.name || "Unknown"), props: parseVariantProperties(v.name || ""), keys };
+	});
+
+	const order: string[] = [];
+	const styles = new Map<string, TextStyleData>();
+	for (const pv of perVariant) {
+		for (const [key, ts] of pv.keys) {
+			if (!styles.has(key)) { styles.set(key, ts); order.push(key); }
+		}
+	}
+
+	return order.map((key) => {
+		const style = styles.get(key)!;
+		const having = perVariant.filter((pv) => pv.keys.has(key));
+		let scope = "";
+		if (having.length < perVariant.length) {
+			// Which variant property decides where this (element, style) appears?
+			const explanation = explainByVariantProperty(
+				perVariant.map((pv) => ({ props: pv.props, display: pv.keys.has(key) ? "yes" : "no" })),
+			);
+			const values = explanation?.groups.filter(([, display]) => display === "yes").map(([pv]) => pv) ?? [];
+			scope = explanation && values.length > 0
+				? `${explanation.property}=${values.join(" | ")}`
+				: scopeLabel(having.map((pv) => pv.name), perVariant.length);
+		}
+		// Text layers are often auto-named after their content — keep the table readable
+		const label = style.nodeName.length > 40 ? `${style.nodeName.slice(0, 40)}…` : style.nodeName;
+		return { style: { ...style, nodeName: label }, scope };
+	});
+}
+
+/** "Primary / Default, Primary / Hover, +3 more" — enough to identify, short enough to read */
+function scopeLabel(names: string[], total: number): string {
+	if (names.length === total) return "";
+	const shown = names.slice(0, 3).join(", ");
+	return names.length > 3 ? `${shown}, +${names.length - 3} more` : shown;
+}
+
 /**
  * Build an anatomy tree representation from a Figma node structure.
  * Returns a formatted string showing the component's nested structure.
  */
-export function buildAnatomyTree(node: any, depth: number = 0, maxDepth: number = 5): string {
+export function buildAnatomyTree(node: any, depth: number = 0, maxDepth: number = DOC_TREE_DEPTH): string {
 	if (depth > maxDepth) return "";
 
 	// For COMPONENT_SET, pick the variant with the deepest children tree for the richest anatomy
@@ -704,6 +914,8 @@ function buildAnatomyLines(
 	isLast: boolean,
 	depth: number,
 	maxDepth: number,
+	/** Appended to this node's own line — " ×7" for a collapsed run of identical siblings */
+	suffix: string = "",
 ): void {
 	if (depth > maxDepth) return;
 
@@ -732,29 +944,49 @@ function buildAnatomyLines(
 	let sizingInfo = "";
 	if (node.primaryAxisSizingMode || node.counterAxisSizingMode) {
 		const parts: string[] = [];
-		if (node.primaryAxisSizingMode === "FIXED") parts.push("fixed-width");
+		// The PRIMARY axis is width only in a horizontal layout — in a vertical one it
+		// is height. (These were hard-wired to width/height, mislabeling every
+		// vertical auto-layout: a fixed-width sidebar printed as "fixed-height".)
+		const vertical = node.layoutMode === "VERTICAL";
+		if (node.primaryAxisSizingMode === "FIXED") parts.push(vertical ? "fixed-height" : "fixed-width");
 		if (node.primaryAxisSizingMode === "AUTO") parts.push("hug-content");
-		if (node.counterAxisSizingMode === "FIXED") parts.push("fixed-height");
+		if (node.counterAxisSizingMode === "FIXED") parts.push(vertical ? "fixed-width" : "fixed-height");
 		if (node.layoutGrow === 1) parts.push("fill");
 		if (parts.length > 0) sizingInfo = ` [${parts.join(", ")}]`;
 	}
 
-	lines.push(`${prefix}${connector}${label}${typeHint}${layoutInfo}${sizingInfo}`);
+	// Hidden layers stay in the tree, marked: the color table names them (a hidden
+	// focus ring is real design intent), so the tree must not pretend they don't exist.
+	const hiddenHint = node.visible === false ? " (hidden)" : "";
+	lines.push(`${prefix}${connector}${label}${typeHint}${suffix}${hiddenHint}${layoutInfo}${sizingInfo}`);
 
-	// Recurse into children
-	if (node.children && Array.isArray(node.children)) {
-		const visibleChildren = node.children.filter((c: any) => c.visible !== false);
-		for (let i = 0; i < visibleChildren.length; i++) {
-			const isChildLast = i === visibleChildren.length - 1;
+	// Recurse into children, collapsing RUNS of siblings that would print
+	// identically (ten nav items, five list rows) into one entry marked ×N. Compared
+	// on the rendered text, so anything the tree shows — a different gap, one hidden
+	// caret — keeps a sibling separate.
+	if (node.children && Array.isArray(node.children) && depth < maxDepth) {
+		const rendered = node.children.map((child: any) => {
+			const own: string[] = [];
+			buildAnatomyLines(child, own, "", true, depth + 1, maxDepth);
+			return own.join("\n");
+		});
+		const runs: Array<{ child: any; count: number }> = [];
+		node.children.forEach((child: any, i: number) => {
+			const last = runs[runs.length - 1];
+			if (last && rendered[i] === rendered[i - 1]) last.count++;
+			else runs.push({ child, count: 1 });
+		});
+		runs.forEach((run, i) => {
 			buildAnatomyLines(
-				visibleChildren[i],
+				run.child,
 				lines,
 				prefix + childPrefix,
-				isChildLast,
+				i === runs.length - 1,
 				depth + 1,
 				maxDepth,
+				run.count > 1 ? ` ×${run.count}` : "",
 			);
-		}
+		});
 	}
 }
 
@@ -763,10 +995,11 @@ function buildAnatomyLines(
  */
 function collectSpacingTokens(node: any, varNameMap: Map<string, string> = new Map()): Array<{
 	property: string;
-	value: number;
+	value: number | string;
 	variableName?: string;
 }> {
-	const tokens: Array<{ property: string; value: number; variableName?: string }> = [];
+	const tokens: Array<{ property: string; value: number | string; variableName?: string }> = [];
+	const autoLayout = !!node.layoutMode && node.layoutMode !== "NONE";
 	const boundVars = node.boundVariables || {};
 
 	const spacingProps = [
@@ -780,7 +1013,14 @@ function collectSpacingTokens(node: any, varNameMap: Map<string, string> = new M
 	];
 
 	for (const { key, label } of spacingProps) {
-		const value = node[key];
+		let value: number | string | undefined | null = node[key];
+		// Same rules as the cross-variant table: a border width only where a border
+		// is painted (and per-side weights win); zero padding is reported, not omitted.
+		if (key === "strokeWeight") value = hasVisibleStroke(node) ? describeStrokeWeight(node) : undefined;
+		else if ((key.startsWith("padding") || key === "itemSpacing") && autoLayout) value = value ?? 0;
+		else if (key === "cornerRadius" && (value === undefined || value === null) && Array.isArray(node.rectangleCornerRadii)) {
+			value = node.rectangleCornerRadii.map((r: number) => `${r}px`).join(" / ");
+		}
 		if (value !== undefined && value !== null) {
 			const varBinding = boundVars[key];
 			// Bound spacing variables expose their id as boundVariables[key].id.
@@ -800,6 +1040,34 @@ function collectSpacingTokens(node: any, varNameMap: Map<string, string> = new M
 	return tokens;
 }
 
+/** True when the node paints at least one stroke */
+function hasVisibleStroke(node: any): boolean {
+	return Array.isArray(node?.strokes) && node.strokes.some((st: any) => describePaint(st) !== null);
+}
+
+/**
+ * The border width that actually RENDERS. With per-side weights (underlines,
+ * dividers, accent bars) the scalar `strokeWeight` is a leftover from before the
+ * override and appears nowhere in the component — `individualStrokeWeights` wins.
+ */
+export function describeStrokeWeight(node: any): number | string {
+	if (!hasVisibleStroke(node)) return "none";
+	const sides = node.individualStrokeWeights;
+	if (sides && typeof sides === "object") {
+		const order: Array<[string, number]> = [
+			["top", sides.top ?? 0], ["right", sides.right ?? 0],
+			["bottom", sides.bottom ?? 0], ["left", sides.left ?? 0],
+		];
+		const weights = order.map(([, w]) => w);
+		if (weights.every((w) => w === weights[0])) return weights[0];
+		const painted = order.filter(([, w]) => w > 0);
+		// "4px bottom" reads better than "0 / 0 / 4 / 0" when few sides are in play
+		if (painted.length <= 2) return painted.map(([side, w]) => `${w}px ${side}`).join(", ");
+		return `${weights.map((w) => `${w}px`).join(" / ")} (top / right / bottom / left)`;
+	}
+	return node.strokeWeight ?? 0;
+}
+
 /** Parse "Size=lg, State=hover" into ordered [property, value] pairs */
 export function parseVariantProperties(rawName: string): Array<[string, string]> {
 	const pairs: Array<[string, string]> = [];
@@ -809,6 +1077,35 @@ export function parseVariantProperties(rawName: string): Array<[string, string]>
 		pairs.push([part.slice(0, eqIdx).trim(), part.slice(eqIdx + 1).trim()]);
 	}
 	return pairs;
+}
+
+/**
+ * Find ONE variant property that fully accounts for how a value differs across
+ * variants: grouping by that property leaves a single value per group.
+ *
+ * The explanation must be non-vacuous — with one variant per group any values
+ * at all would "fit" (single-property sets), so that doesn't count.
+ * Shared by spacing, typography and anatomy so they explain variation alike.
+ */
+export function explainByVariantProperty(
+	samples: Array<{ props: Array<[string, string]>; display: string }>,
+): { property: string; groups: Array<[string, string]> } | null {
+	if (samples.length < 2) return null;
+	for (const [propName] of samples[0].props) {
+		const groups = new Map<string, Set<string>>();
+		let complete = true;
+		for (const x of samples) {
+			const propValue = x.props.find(([n]) => n === propName)?.[1];
+			if (propValue === undefined) { complete = false; break; }
+			if (!groups.has(propValue)) groups.set(propValue, new Set());
+			groups.get(propValue)!.add(x.display);
+		}
+		if (!complete) continue;
+		if (groups.size > 1 && groups.size < samples.length && [...groups.values()].every((vals) => vals.size === 1)) {
+			return { property: propName, groups: [...groups.entries()].map(([pv, vals]) => [pv, [...vals][0]]) };
+		}
+	}
+	return null;
 }
 
 /** One row of the cross-variant spacing table */
@@ -871,9 +1168,17 @@ export function collectSpacingAcrossVariants(
 	if (variants.length === 0) return result;
 
 	for (const { key, label } of SPACING_COMPARISON_PROPS) {
-		const isSet = (v: any) => (v[key] !== undefined && v[key] !== null)
-			// Per-corner rounding: REST drops the scalar and sends only the 4-tuple
-			|| (key === "cornerRadius" && Array.isArray(v.rectangleCornerRadii));
+		const isPadding = key.startsWith("padding") || key === "itemSpacing";
+		const isSet = (v: any) => (key === "strokeWeight"
+			// A border width only means something where a border is painted. REST
+			// reports strokeWeight (default 1) on every node, stroked or not.
+			? hasVisibleStroke(v)
+			: (v[key] !== undefined && v[key] !== null)
+				// Per-corner rounding: REST drops the scalar and sends only the 4-tuple
+				|| (key === "cornerRadius" && Array.isArray(v.rectangleCornerRadii))
+				// Auto-layout: REST omits zero-valued padding/gap, but 0 is a real,
+				// reportable value — leaving it out is indistinguishable from "unknown"
+				|| (isPadding && !!v.layoutMode && v.layoutMode !== "NONE"));
 		if (!variants.some(isSet)) continue;
 
 		const samples = variants.map((v) => {
@@ -882,6 +1187,7 @@ export function collectSpacingAcrossVariants(
 			if (key === "cornerRadius" && (v[key] === undefined || v[key] === null) && Array.isArray(v.rectangleCornerRadii)) {
 				value = v.rectangleCornerRadii.map((r: number) => `${r}px`).join(" / ");
 			}
+			if (key === "strokeWeight") value = describeStrokeWeight(v);
 			const varId: string | undefined = typeof v.boundVariables?.[key]?.id === "string"
 				? v.boundVariables[key].id
 				: undefined;
@@ -926,28 +1232,20 @@ export function collectSpacingAcrossVariants(
 		}
 
 		// Is the variation fully explained by ONE variant property (e.g. Size)?
-		let explainedBy: string | null = null;
-		let explainedGroups: Array<[string, string]> = [];
-		for (const [propName] of samples[0].props) {
-			const groups = new Map<string, Set<string>>();
-			for (const x of samples) {
-				const propValue = x.props.find(([n]) => n === propName)?.[1];
-				if (propValue === undefined) { groups.clear(); break; }
-				if (!groups.has(propValue)) groups.set(propValue, new Set());
-				groups.get(propValue)!.add(x.display);
-			}
-			// groups.size < samples.length: with one variant per group the "explanation"
-			// is vacuous — any values at all would satisfy it (single-property sets).
-			if (groups.size > 1 && groups.size < samples.length && [...groups.values()].every((vals) => vals.size === 1)) {
-				explainedBy = propName;
-				explainedGroups = [...groups.entries()].map(([pv, vals]) => [pv, [...vals][0]]);
-				break;
-			}
-		}
+		const explanation = explainByVariantProperty(samples);
+		const explainedBy = explanation?.property ?? null;
+		const explainedGroups = explanation?.groups ?? [];
 
 		let valueCell: string;
 		if (explainedBy) {
-			valueCell = `varies by **${explainedBy}**: ${explainedGroups.map(([pv, val]) => `${pv} ${val}`).join(" · ")}`;
+			// Property values that land on the same result read better together:
+			// "Active, Default, Hover 2px bottom · Focus 2px"
+			const byResult = new Map<string, string[]>();
+			for (const [pv, val] of explainedGroups) {
+				if (!byResult.has(val)) byResult.set(val, []);
+				byResult.get(val)!.push(pv);
+			}
+			valueCell = `varies by **${explainedBy}**: ${[...byResult.entries()].map(([val, pvs]) => `${pvs.join(", ")} ${val}`).join(" · ")}`;
 		} else {
 			// No pattern — list each distinct value, most common first, naming the rare ones
 			const byValue = new Map<string, string[]>();
@@ -2019,7 +2317,7 @@ async function detectAtomicLevel(
 	}
 }
 
-function generateFrontmatter(
+export function generateFrontmatter(
 	componentName: string,
 	description: string,
 	node: any,
@@ -2039,12 +2337,12 @@ function generateFrontmatter(
 		created_at: string;
 	} | null,
 ): string {
-	const status = codeInfo?.changelog?.[0]
-		? "stable"
-		: componentMeta?.description?.toLowerCase().includes("deprecated")
-			? "deprecated"
-			: "stable";
-	const version = codeInfo?.changelog?.[0]?.version || "1.0.0";
+	// Only state what is actually known. "stable" / "1.0.0" used to be emitted for
+	// every component and read as extracted facts.
+	const status: string | null = componentMeta?.description?.toLowerCase().includes("deprecated")
+		? "deprecated"
+		: codeInfo?.changelog?.[0] ? "stable" : null;
+	const version: string | null = codeInfo?.changelog?.[0]?.version || null;
 	const tags = [componentName.toLowerCase()];
 	if (level) tags.push(level);
 	if (node.type === "COMPONENT_SET") tags.push("variants");
@@ -2053,9 +2351,9 @@ function generateFrontmatter(
 	const lines = [
 		"---",
 		`title: ${componentName}`,
-		`description: ${((description.split(/\n\s*\n|\n#{1,6}\s|\n\*\*/)[0] || description).replace(/\n/g, " ").replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+/)[0] || `${componentName} component`)}`,
-		`status: ${status}`,
-		`version: ${version}`,
+		...((((description.split(/\n\s*\n|\n#{1,6}\s|\n\*\*/)[0] || description).replace(/\n/g, " ").replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+/)[0])) ? [`description: ${((description.split(/\n\s*\n|\n#{1,6}\s|\n\*\*/)[0] || description).replace(/\n/g, " ").replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+/)[0])}`] : []),
+		...(status ? [`status: ${status}`] : []),
+		...(version ? [`version: ${version}`] : []),
 		`category: components`,
 		...(level ? [`level: ${level}`] : []),
 		`tags: [${tags.join(", ")}]`,
@@ -2089,7 +2387,7 @@ function generateFrontmatter(
 	return lines.join("\n");
 }
 
-function generateOverviewSection(
+export function generateOverviewSection(
 	componentName: string,
 	description: string,
 	fileUrl: string,
@@ -2116,13 +2414,18 @@ function generateOverviewSection(
 	lines.push(links.join(" | "));
 	lines.push("");
 
-	lines.push("## Overview");
-	lines.push("");
+	// Collected separately so an empty overview doesn't leave an orphaned heading
+	const section: string[] = [];
+
 
 	// Use parsed overview or fall back to raw description
-	const overviewText = parsedDesc.overview || description?.split("\n")[0] || `The ${componentName} component.`;
-	lines.push(overviewText);
-	lines.push("");
+	// No filler: libraries that deliberately keep descriptions empty would get a
+	// sentence carrying no information on every page. Nothing says more than that.
+	const overviewText = parsedDesc.overview || description?.split("\n")[0] || "";
+	if (overviewText.trim()) {
+		section.push(overviewText);
+		section.push("");
+	}
 
 	// Base component attribution
 	if (codeInfo?.baseComponent) {
@@ -2130,40 +2433,72 @@ function generateOverviewSection(
 			? `[${codeInfo.baseComponent.name}](${codeInfo.baseComponent.url})`
 			: codeInfo.baseComponent.name;
 		if (codeInfo.baseComponent.description) {
-			lines.push(`Built on ${baseLink}, ${codeInfo.baseComponent.description}`);
+			section.push(`Built on ${baseLink}, ${codeInfo.baseComponent.description}`);
 		} else {
-			lines.push(`Built on ${baseLink}.`);
+			section.push(`Built on ${baseLink}.`);
 		}
-		lines.push("");
+		section.push("");
 	}
 
 	// When to Use
 	if (parsedDesc.whenToUse.length > 0) {
-		lines.push("### When to Use");
-		lines.push("");
+		section.push("### When to Use");
+		section.push("");
 		for (const item of parsedDesc.whenToUse) {
-			lines.push(`- ${item}`);
+			section.push(`- ${item}`);
 		}
-		lines.push("");
+		section.push("");
 	}
 
 	// When NOT to Use
 	if (parsedDesc.whenNotToUse.length > 0) {
-		lines.push("### When NOT to Use");
-		lines.push("");
+		section.push("### When NOT to Use");
+		section.push("");
 		for (const item of parsedDesc.whenNotToUse) {
-			lines.push(`- ${item}`);
+			section.push(`- ${item}`);
 		}
+		section.push("");
+	}
+
+	if (section.length > 0) {
+		lines.push("## Overview");
 		lines.push("");
+		lines.push(...section);
 	}
 
 	return lines.join("\n");
 }
 
 /** Icon cell text: the icon in the slot, flagged when it's only an instance-swap default */
-function formatIconCell(icon: VariantColorData["icons"][number] | undefined): string {
-	if (!icon) return "—";
-	return icon.swapProperty ? `${icon.name} _(default — swappable via **${icon.swapProperty}**)_` : icon.name;
+function formatIconCell(icons: VariantColorData["icons"]): string {
+	if (!icons || icons.length === 0) return "—";
+	// A chip with a leading AND a trailing icon has two — show both. A nav with
+	// twenty repeats of the same one shows it once, counted.
+	const groups = new Map<string, { icon: VariantColorData["icons"][number]; total: number; hidden: number }>();
+	for (const icon of icons) {
+		const key = `${icon.name}|${icon.swapProperty ?? ""}`;
+		if (!groups.has(key)) groups.set(key, { icon, total: 0, hidden: 0 });
+		const g = groups.get(key)!;
+		g.total++;
+		if (icon.hidden) g.hidden++;
+	}
+	const MAX_ICON_GROUPS = 5;
+	const parts = [...groups.values()].slice(0, MAX_ICON_GROUPS).map(({ icon, total, hidden }) => {
+		if (total === 1) return formatOneIcon(icon);
+		// Count first, then the note: "Placeholder ×9 _(all hidden)_"
+		const label = formatOneIcon({ ...icon, hidden: false });
+		const note = hidden === 0 ? "" : hidden === total ? " _(all hidden)_" : ` _(${hidden} hidden)_`;
+		return `${label} ×${total}${note}`;
+	});
+	if (groups.size > MAX_ICON_GROUPS) parts.push(`+${groups.size - MAX_ICON_GROUPS} more`);
+	return parts.join("; ");
+}
+
+function formatOneIcon(icon: VariantColorData["icons"][number]): string {
+	const notes: string[] = [];
+	if (icon.swapProperty) notes.push(`default — swappable via **${icon.swapProperty}**`);
+	if (icon.hidden) notes.push("hidden in this variant");
+	return notes.length > 0 ? `${icon.name} _(${notes.join("; ")})_` : icon.name;
 }
 
 export function generateStatesAndVariantsSection(
@@ -2180,6 +2515,7 @@ export function generateStatesAndVariantsSection(
 	const booleans: Array<{ name: string; defaultValue: boolean }> = [];
 	const textProps: Array<{ name: string; defaultValue: string }> = [];
 	const instanceSwaps: Array<{ name: string; defaultName: string | null; preferredCount: number }> = [];
+	const slots: Array<{ name: string; preferredCount: number; description: string | null }> = [];
 
 	for (const [rawName, def] of Object.entries(props) as Array<[string, any]>) {
 		// Strip Figma internal ID suffixes like "#17100:0" from property names
@@ -2200,6 +2536,13 @@ export function generateStatesAndVariantsSection(
 				name,
 				defaultName: resolveMainComponentName(def.defaultValue, lookup) ?? null,
 				preferredCount: Array.isArray(def.preferredValues) ? def.preferredValues.length : 0,
+			});
+		} else if (def.type === "SLOT") {
+			// For a compositional component the slots ARE the API
+			slots.push({
+				name,
+				preferredCount: Array.isArray(def.preferredValues) ? def.preferredValues.length : 0,
+				description: typeof def.description === "string" && def.description.trim() ? def.description.trim() : null,
 			});
 		}
 	}
@@ -2230,21 +2573,24 @@ export function generateStatesAndVariantsSection(
 			for (const vd of variantData) {
 				const displayName = cleanVariantName(vd.variantName);
 
+				// A hidden layer never stands in for what renders
+				const painted = (list: VariantColorEntry[]) => list.find((c) => !c.hidden);
+
 				// Get primary fill (background)
-				const bgFill = vd.fills[0];
+				const bgFill = painted(vd.fills);
 				const bgVal = bgFill
 					? (bgFill.variableName ? `\`${bgFill.variableName}\` (${bgFill.hex})` : bgFill.hex)
 					: "—";
 
 				// Get primary text/icon color
-				const textColor = vd.textColors[0] || vd.iconColors[0] || vd.strokes[0];
+				const textColor = painted(vd.textColors) || painted(vd.iconColors) || painted(vd.strokes);
 				const textVal = textColor
 					? (textColor.variableName ? `\`${textColor.variableName}\` (${textColor.hex})` : textColor.hex)
 					: "—";
 
 				const rowParts = [`**${displayName}**`, bgVal];
 				if (hasIcons) {
-					rowParts.push(formatIconCell(vd.icons[0]));
+					rowParts.push(formatIconCell(vd.icons));
 				}
 				rowParts.push(textVal);
 				lines.push("| " + rowParts.join(" | ") + " |");
@@ -2260,7 +2606,7 @@ export function generateStatesAndVariantsSection(
 			lines.push("|---------|---------------------|");
 			for (const vd of variantData) {
 				const displayName = cleanVariantName(vd.variantName);
-				lines.push(`| ${displayName} | ${formatIconCell(vd.icons[0])} |`);
+				lines.push(`| ${displayName} | ${formatIconCell(vd.icons)} |`);
 			}
 			lines.push("");
 		}
@@ -2275,7 +2621,9 @@ export function generateStatesAndVariantsSection(
 	}
 
 	// Configurable properties table (all property types)
-	if (booleans.length > 0 || textProps.length > 0 || instanceSwaps.length > 0) {
+	// `variants` belongs in this guard: the table below renders them as its first
+	// rows, so a set with only VARIANT properties used to get no table at all.
+	if (variants.length > 0 || booleans.length > 0 || textProps.length > 0 || instanceSwaps.length > 0 || slots.length > 0) {
 		lines.push("### Configurable Properties");
 		lines.push("");
 		lines.push("| Property | Type | Default | Description |");
@@ -2293,6 +2641,10 @@ export function generateStatesAndVariantsSection(
 		for (const sw of instanceSwaps) {
 			const preferred = sw.preferredCount > 0 ? ` (${sw.preferredCount} preferred values)` : "";
 			lines.push(`| **${sw.name}** | \`instance swap\` | ${sw.defaultName ? `\`${sw.defaultName}\`` : "—"} | Swaps the nested ${sw.name.toLowerCase()} instance${preferred} |`);
+		}
+		for (const slot of slots) {
+			const preferred = slot.preferredCount > 0 ? ` (${slot.preferredCount} preferred values)` : "";
+			lines.push(`| **${slot.name}** | \`slot\` | — | ${slot.description ?? `Accepts nested content for ${slot.name.toLowerCase()}`}${preferred} |`);
 		}
 		lines.push("");
 	}
@@ -2415,8 +2767,10 @@ export function generateVisualSpecsSection(
 			};
 			// Multi-path icons and repeated shapes would otherwise emit identical rows
 			const emitted = new Set<string>();
+			// Text layers are often auto-named after their content ("Lorem ipsum dolor…")
+			const short = (name: string) => (name.length > 40 ? `${name.slice(0, 40)}…` : name);
 			const pushRow = (label: string, c: VariantColorEntry) => {
-				const row = `| ${label} | ${tokenCell(c)} | ${c.hex} |`;
+				const row = `| ${label}${c.hidden ? " _(hidden layer)_" : ""} | ${tokenCell(c)} | ${c.hex} |`;
 				if (emitted.has(row)) return;
 				emitted.add(row);
 				lines.push(row);
@@ -2436,20 +2790,14 @@ export function generateVisualSpecsSection(
 			for (const c of vd.iconColors) pushRow(c.iconLabel ? `Icon (${c.iconLabel})` : "Icon", c);
 
 			// Text colors
-			for (const text of vd.textColors) {
-				const varName = text.variableName || (text.variableId ? varNameMap.get(text.variableId) : undefined);
-				lines.push(
-					`| Text (${text.nodeName}) | ${varName ? `\`${varName}\`` : "—"} | ${text.hex} |`,
-				);
-			}
+			for (const text of vd.textColors) pushRow(`Text (${short(text.nodeName)})`, text);
 
-			// Strokes
-			for (const stroke of vd.strokes) {
-				const varName = stroke.variableName || (stroke.variableId ? varNameMap.get(stroke.variableId) : undefined);
-				lines.push(
-					`| Stroke | ${varName ? `\`${varName}\`` : "—"} | ${stroke.hex} |`,
-				);
-			}
+			// Strokes — through the same writer, so a visible underline and a hidden
+			// focus ring sharing one color don't print as two indistinguishable rows
+			for (const stroke of vd.strokes) pushRow(stroke.nodeName ? `Stroke (${stroke.nodeName})` : "Stroke", stroke);
+
+			// Shadows, blurs, opacity — dropping them would imply the component is flat
+			for (const fx of vd.effects) pushRow(fx.nodeName ? `Effect (${fx.nodeName})` : "Effect", fx);
 		}
 		lines.push("");
 	} else {
@@ -2513,7 +2861,7 @@ export function generateVisualSpecsSection(
 		lines.push("|----------|---------------|-------|");
 		for (const token of spacingTokens) {
 			const varDisplay = token.variableName ? `\`${token.variableName}\`` : "—";
-			lines.push(`| ${token.property} | ${varDisplay} | ${token.value}px |`);
+			lines.push(`| ${token.property} | ${varDisplay} | ${formatSpacingValue(token.value)} |`);
 		}
 		lines.push("");
 	} else {
@@ -2777,7 +3125,37 @@ function generateChangelogSection(codeInfo?: CodeDocInfo): string {
 // New Section Generators (Anatomy, Typography, Content Guidelines, Parity)
 // ============================================================================
 
-function generateAnatomySection(node: any): string {
+/** Layer-structure fingerprint: names, types and nesting — not styling */
+function structureSignature(node: any, depth: number = 0): string {
+	if (depth > DOC_TREE_DEPTH) return "";
+	const kids = Array.isArray(node.children) ? node.children.map((c: any) => structureSignature(c, depth + 1)).join(",") : "";
+	return `${node.type}:${depth === 0 ? "" : node.name}${node.visible === false ? "!" : ""}[${kids}]`;
+}
+
+const CONTAINER_TYPES = new Set(["FRAME", "GROUP", "INSTANCE", "COMPONENT", "COMPONENT_SET", "SECTION", "BOOLEAN_OPERATION"]);
+
+/**
+ * Count containers sitting exactly at the fetch-depth limit with no children.
+ * REST cuts a tree off by returning `children: []`, which looks identical to an
+ * empty frame — so at that level an empty container MAY be hiding real content.
+ * `fetchedRoot` is the node the REST call requested (levels count from it).
+ */
+export function countPossiblyTruncated(fetchedRoot: any, fetchDepth: number = DOC_TREE_DEPTH): number {
+	let count = 0;
+	const walk = (node: any, level: number): void => {
+		if (!node) return;
+		const kids = Array.isArray(node.children) ? node.children : [];
+		if (level >= fetchDepth) {
+			if (CONTAINER_TYPES.has(node.type) && kids.length === 0) count++;
+			return;
+		}
+		for (const child of kids) walk(child, level + 1);
+	};
+	walk(fetchedRoot, 0);
+	return count;
+}
+
+export function generateAnatomySection(node: any, fetchDepth: number = DOC_TREE_DEPTH): string {
 	const lines = ["", "## Component Anatomy", ""];
 
 	// For COMPONENT_SET, list all variants first
@@ -2792,26 +3170,87 @@ function generateAnatomySection(node: any): string {
 	lines.push("### Design Structure (Figma)");
 	lines.push("");
 
-	const tree = buildAnatomyTree(node);
-	if (tree.includes("└── ") || tree.includes("├── ")) {
-		// Rich tree with children
-		lines.push("```");
-		lines.push(tree);
-		lines.push("```");
+	// Variants can differ STRUCTURALLY (a scrollable variant wraps its list in
+	// scroller frames and adds a fade). Showing one tree would silently drop
+	// everything unique to the others — so: one tree per distinct structure.
+	const MAX_STRUCTURES = 6;
+	const structures: Array<{ node: any; names: string[]; props: Array<Array<[string, string]>> }> = [];
+	if (node.type === "COMPONENT_SET" && node.children?.length > 0) {
+		const bySignature = new Map<string, number>();
+		for (const variant of node.children) {
+			const sig = structureSignature(variant);
+			if (!bySignature.has(sig)) {
+				bySignature.set(sig, structures.length);
+				structures.push({ node: variant, names: [], props: [] });
+			}
+			const entry = structures[bySignature.get(sig)!];
+			entry.names.push(cleanVariantName(variant.name || "Unknown"));
+			entry.props.push(parseVariantProperties(variant.name || ""));
+		}
 	} else {
-		// Shallow tree (REST API depth limitation)
+		structures.push({ node, names: [], props: [] });
+	}
+
+	if (structures.length > 1) {
+		// Which variant property decides the structure, if one does
+		const explanation = explainByVariantProperty(
+			structures.flatMap((st, i) => st.props.map((props) => ({ props, display: String(i) }))),
+		);
+		lines.push(`_${node.children.length} variants share ${structures.length} distinct layer structures${explanation ? `, decided by **${explanation.property}**` : ""}._`);
+		lines.push("");
+		structures.slice(0, MAX_STRUCTURES).forEach((st, i) => {
+			const values = explanation?.groups.filter(([, display]) => display === String(i)).map(([pv]) => pv) ?? [];
+			const heading = values.length > 0
+				? `${explanation!.property}=${values.join(" | ")}`
+				: scopeLabel(st.names, -1);
+			lines.push(`**${heading}** (${st.names.length} variant${st.names.length === 1 ? "" : "s"})`);
+			lines.push("");
+			lines.push("```");
+			lines.push(buildAnatomyTree(st.node));
+			lines.push("```");
+			lines.push("");
+		});
+		if (structures.length > MAX_STRUCTURES) {
+			lines.push(`_+${structures.length - MAX_STRUCTURES} more distinct structures not shown._`);
+			lines.push("");
+		}
+	} else {
 		lines.push("```");
-		lines.push(tree);
+		lines.push(buildAnatomyTree(structures[0].node));
 		lines.push("```");
 		lines.push("");
-		lines.push("_Note: Tree depth may be limited by the Figma REST API. Use the Desktop Bridge plugin for full node-level anatomy._");
 	}
-	lines.push("");
+
+	// Say so when the fetch may have cut the tree off, rather than presenting an
+	// incomplete document as a complete one.
+	const truncated = countPossiblyTruncated(node, fetchDepth);
+	if (truncated > 0) {
+		lines.push(`_Note: ${truncated} layer${truncated === 1 ? "" : "s"} sit${truncated === 1 ? "s" : ""} at the depth limit of this extraction (${fetchDepth} levels) with no visible contents. Anything nested deeper is NOT reflected in this document — colors, typography and structure below that point may be incomplete._`);
+		lines.push("");
+	}
 
 	return lines.join("\n");
 }
 
-function generateTypographySection(node: any): string {
+export function generateTypographySection(node: any): string {
+	if (node.type === "COMPONENT_SET" && node.children?.length > 1) {
+		const rows = collectTypographyAcrossVariants(node);
+		if (rows.length === 0) return "";
+		const out = ["", "## Typography", ""];
+		const scoped = rows.some((r) => r.scope);
+		out.push(`_Compared across all ${node.children.length} variants${scoped ? " — the Applies to column shows where a style is specific to some of them" : "; every variant uses the same styles"}._`);
+		out.push("");
+		out.push(`| Element | Font | Weight | Size | Line Height | Letter Spacing |${scoped ? " Applies to |" : ""}`);
+		out.push(`|---------|------|--------|------|-------------|----------------|${scoped ? "------------|" : ""}`);
+		for (const { style: ts, scope } of rows) {
+			out.push(
+				`| ${ts.nodeName}${ts.hidden ? " _(hidden layer)_" : ""}${ts.mixed ? " _(mixed styles — base style shown)_" : ""} | ${ts.fontFamily} | ${ts.fontWeightName} (${ts.fontWeight}) | ${ts.fontSize}px | ${ts.lineHeight}px | ${ts.letterSpacing === 0 ? "0" : `${ts.letterSpacing}px`} |${scoped ? ` ${scope || "all variants"} |` : ""}`,
+			);
+		}
+		out.push("");
+		return out.join("\n");
+	}
+
 	const textStyles = collectTypographyData(node);
 	if (textStyles.length === 0) return "";
 
@@ -2822,11 +3261,11 @@ function generateTypographySection(node: any): string {
 	// Deduplicate by font properties
 	const seen = new Set<string>();
 	for (const ts of textStyles) {
-		const key = `${ts.fontFamily}:${ts.fontWeight}:${ts.fontSize}:${ts.lineHeight}`;
+		const key = `${ts.fontFamily}:${ts.fontWeight}:${ts.fontSize}:${ts.lineHeight}:${ts.hidden ? "h" : ""}:${ts.mixed ? "m" : ""}`;
 		if (seen.has(key)) continue;
 		seen.add(key);
 		lines.push(
-			`| ${ts.nodeName} | ${ts.fontFamily} | ${ts.fontWeightName} (${ts.fontWeight}) | ${ts.fontSize}px | ${ts.lineHeight}px | ${ts.letterSpacing === 0 ? "0" : `${ts.letterSpacing}px`} |`,
+			`| ${ts.nodeName}${ts.hidden ? " _(hidden layer)_" : ""}${ts.mixed ? " _(mixed styles — base style shown)_" : ""} | ${ts.fontFamily} | ${ts.fontWeightName} (${ts.fontWeight}) | ${ts.fontSize}px | ${ts.lineHeight}px | ${ts.letterSpacing === 0 ? "0" : `${ts.letterSpacing}px`} |`,
 		);
 	}
 	lines.push("");
@@ -2858,69 +3297,72 @@ function generateContentGuidelinesSection(parsedDesc: ParsedDescription): string
 	return lines.join("\n");
 }
 
-function generateParitySection(
+export function generateParitySection(
 	node: any,
 	codeInfo: CodeDocInfo,
 ): string {
 	const lines = ["", "## Design-Code Parity", ""];
 
-	// Variant coverage - compare Figma variants with code variants if available
-	// Use case-insensitive comparison: Figma uses "Default", code uses "default"
-	const figmaVariantsRaw = new Map<string, string>(); // lowercase → original name
+	// Variant coverage — compare each Figma variant PROPERTY with the code prop of
+	// the same name, value by value. (This used to look only for a property
+	// literally named "Variant" and otherwise captured the first property's NAME —
+	// so a Size × State set was reported as having a Figma-only variant "Size".)
+	const normalize = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+	const figmaProps = new Map<string, { name: string; values: Map<string, string> }>();
 	if (node.type === "COMPONENT_SET" && node.children) {
 		for (const child of node.children) {
-			const match = child.name?.match(/Variant=([^,]+)/i) || child.name?.match(/^([^,=]+)/);
-			if (match) {
-				const raw = match[1].trim();
-				figmaVariantsRaw.set(raw.toLowerCase(), raw);
+			for (const [propName, value] of parseVariantProperties(child.name || "")) {
+				const key = normalize(propName);
+				if (!figmaProps.has(key)) figmaProps.set(key, { name: propName, values: new Map() });
+				figmaProps.get(key)!.values.set(value.toLowerCase(), value);
 			}
 		}
 	}
 
-	// Try to extract code variants from variant definition or props
-	const codeVariantsRaw = new Map<string, string>(); // lowercase → original name
-	if (codeInfo.props) {
-		const variantProp = codeInfo.props.find(
-			(p) => p.name.toLowerCase() === "variant",
-		);
-		if (variantProp?.type) {
-			// Match both single and double quoted values: "default" or 'default'
-			const matches = variantProp.type.match(/["']([^"']+)["']/g);
-			if (matches) {
-				for (const m of matches) {
-					const raw = m.replace(/["']/g, "");
-					codeVariantsRaw.set(raw.toLowerCase(), raw);
-				}
-			}
+	// Code props whose type is a union of string literals: "sm" | "md" | 'lg'
+	const codeProps = new Map<string, { name: string; values: Map<string, string> }>();
+	for (const prop of codeInfo.props ?? []) {
+		const literals = prop.type?.match(/["']([^"']+)["']/g);
+		if (!literals) continue;
+		const values = new Map<string, string>();
+		for (const m of literals) {
+			const raw = m.replace(/["']/g, "");
+			values.set(raw.toLowerCase(), raw);
 		}
+		codeProps.set(normalize(prop.name), { name: prop.name, values });
 	}
 
-	if (figmaVariantsRaw.size > 0 || codeVariantsRaw.size > 0) {
-		// Merge by lowercase key
-		const allKeys = new Set([...figmaVariantsRaw.keys(), ...codeVariantsRaw.keys()]);
+	// Compare properties present on BOTH sides, plus "variant" when either side has
+	// it (the long-standing behavior). A property with no counterpart gets no
+	// claim at all — a boolean in code and a True/False variant in Figma aren't comparable here.
+	const compared = [...figmaProps.keys()].filter((k) => codeProps.has(k));
+	if (!compared.includes("variant") && (figmaProps.has("variant") || codeProps.has("variant"))) compared.push("variant");
+
+	if (compared.length > 0) {
+		const labelProperty = compared.length > 1 || compared[0] !== "variant";
 
 		lines.push("### Variant Coverage");
 		lines.push("");
 		lines.push("| Variant | In Figma | In Code | Status |");
 		lines.push("|---------|----------|---------|--------|");
 
-		for (const key of allKeys) {
-			const figmaName = figmaVariantsRaw.get(key);
-			const codeName = codeVariantsRaw.get(key);
-			const displayName = figmaName || codeName || key;
-			const inFigma = figmaVariantsRaw.has(key);
-			const inCode = codeVariantsRaw.has(key);
-			let status: string;
-			if (inFigma && inCode) {
-				status = "In sync";
-			} else if (inFigma && !inCode) {
-				status = "Figma-only — needs code variant";
-			} else {
-				status = "Code-only — needs Figma variant";
+		for (const key of compared) {
+			const figma = figmaProps.get(key);
+			const code = codeProps.get(key);
+			const propLabel = figma?.name || code?.name || key;
+			const allValues = new Set([...(figma?.values.keys() ?? []), ...(code?.values.keys() ?? [])]);
+			for (const valueKey of allValues) {
+				const inFigma = figma?.values.has(valueKey) ?? false;
+				const inCode = code?.values.has(valueKey) ?? false;
+				const display = figma?.values.get(valueKey) || code?.values.get(valueKey) || valueKey;
+				const status = inFigma && inCode
+					? "In sync"
+					: inFigma ? "Figma-only — needs code variant" : "Code-only — needs Figma variant";
+				lines.push(
+					`| ${labelProperty ? `${propLabel}: ${display}` : display} | ${inFigma ? "Yes" : "**No**"} | ${inCode ? "Yes" : "**No**"} | ${status} |`,
+				);
 			}
-			lines.push(
-				`| ${displayName} | ${inFigma ? "Yes" : "**No**"} | ${inCode ? "Yes" : "**No**"} | ${status} |`,
-			);
 		}
 		lines.push("");
 	}
@@ -3446,7 +3888,25 @@ export function registerDesignCodeTools(
 				const api = await getFigmaAPI();
 
 				// Fetch component node with deeper depth for anatomy & per-variant data
-				const nodesResponse = await api.getNodes(fileKey, [nodeId], { depth: 4 });
+				// DOC_TREE_DEPTH, not 4: levels count from the requested node, so on a
+				// COMPONENT_SET depth 4 left each variant only 3 — enough to silently drop
+				// nested labels and a whole scroll mechanism from the generated document.
+				let fetchDepth = DOC_TREE_DEPTH;
+				let nodesResponse: any;
+				try {
+					nodesResponse = await withTimeout(
+						api.getNodes(fileKey, [nodeId], { depth: DOC_TREE_DEPTH }),
+						DEEP_FETCH_TIMEOUT_MS,
+						"deep component fetch",
+					);
+				} catch (deepErr) {
+					// A huge set (hundreds of variants × nested instances) can make the deep
+					// fetch too slow or too large. A shallower document that SAYS it is
+					// shallow beats no document — the truncation note below reports it.
+					fetchDepth = SHALLOW_FETCH_DEPTH;
+					logger.warn({ err: deepErr instanceof Error ? deepErr.message : String(deepErr) }, "Deep fetch failed; retrying component doc fetch at reduced depth");
+					nodesResponse = await api.getNodes(fileKey, [nodeId], { depth: SHALLOW_FETCH_DEPTH });
+				}
 				const nodeData = nodesResponse?.nodes?.[nodeId];
 				if (!nodeData?.document) {
 					throw new Error(`Node ${nodeId} not found in file ${fileKey}`);
@@ -3539,12 +3999,17 @@ export function registerDesignCodeTools(
 				if (getDesktopConnector) {
 					try {
 						const connector = await getDesktopConnector();
-						const varsResult = await connector.getVariables();
+						// Target the file being DOCUMENTED, not whichever file is active:
+						// variable ids are file-local, so the active file's variables either
+						// resolve nothing (every token prints as "—") or, on an id collision,
+						// resolve to the wrong names. Rejects → caught → hex fallback.
+						const varsResult = await connector.getVariables(fileKey);
 						const varList = varsResult?.variables || varsResult?.result?.variables;
 						if (Array.isArray(varList)) {
-							for (const v of varList) {
-								if (v?.id && v?.name) varNameMap.set(v.id, v.name);
-							}
+							for (const [id, name] of buildVariableNameMap(
+								varList,
+								varsResult?.variableCollections || varsResult?.result?.variableCollections,
+							)) varNameMap.set(id, name);
 							logger.info({ count: varList.length }, "Resolved variable names via Desktop Bridge for docs");
 						}
 					} catch {
@@ -3571,7 +4036,7 @@ export function registerDesignCodeTools(
 				if (getDesktopConnector) {
 					try {
 						const connector = await getDesktopConnector();
-						const bridgeResult = await connector.getComponentFromPluginUI(nodeId);
+						const bridgeResult = await connector.getComponentFromPluginUI(nodeId, fileKey);
 						if (bridgeResult.success && bridgeResult.component) {
 							// Fetch description from bridge if REST API returned empty
 							if (!description) {
@@ -3690,7 +4155,7 @@ export function registerDesignCodeTools(
 				}
 
 				if (s.anatomy) {
-					const anatomySection = generateAnatomySection(node);
+					const anatomySection = generateAnatomySection(node, fetchDepth);
 					if (anatomySection.trim()) {
 						parts.push(anatomySection);
 						includedSections.push("anatomy");
