@@ -66,12 +66,12 @@
 		"pino": "^9.5.0",
 		"pino-pretty": "^13.0.0",
 		"uuid": "^11.0.3",
-		"ws": "^8.19.0",
+		"ws": "^8.22.0",
 		"zod": "^3.25.76"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.2.5",
-		"@cloudflare/puppeteer": "^1.0.4",
+		"@cloudflare/puppeteer": "^1.4.0",
 		"@types/jest": "^29.5.14",
 		"@types/jsdom": "^28.0.1",
 		"@types/node": "^22.10.2",
@@ -85,7 +85,29 @@
 		"typescript": "5.9.3",
 		"vite": "^6.0.0",
 		"vite-plugin-singlefile": "^2.0.0",
-		"wrangler": "4.72.0",
+		"wrangler": "^4.142.0",
 		"zod-to-json-schema": "^3.25.1"
+	},
+	"overrides": {
+		"@puppeteer/browsers": "^3.2.3",
+		"brace-expansion@1": "^1.1.18",
+		"browserslist": "^4.29.1",
+		"fast-uri": "^3.1.6",
+		"ip-address": "^10.7.2",
+		"js-yaml@3": "^3.15.2",
+		"js-yaml@4": "^4.3.2",
+		"nanoid@3": "^3.3.18",
+		"nanoid@5": "^5.1.16",
+		"postcss": "^8.5.28",
+		"undici": "^7.29.0",
+		"ws": "$ws",
+		"sharp": "^0.35.5",
+		"hono": "^4.13.9",
+		"@hono/node-server": "^1.19.15",
+		"qs": "^6.16.0",
+		"baseline-browser-mapping": "^2.11.26",
+		"ai@6": "^6.0.214",
+		"@ai-sdk/provider-utils@4": "^4.0.33",
+		"body-parser": "^2.3.0"
 	}
 }
