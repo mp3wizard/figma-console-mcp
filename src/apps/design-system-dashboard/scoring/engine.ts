@@ -76,9 +76,12 @@ function generateSummary(categories: CategoryScore[]): string[] {
  * @param data - Raw Figma data (variables, collections, components, styles)
  * @returns Complete dashboard payload with overall score, categories, and summary
  */
-export function scoreDesignSystem(data: DesignSystemRawData): DashboardData {
+export function scoreDesignSystem(
+	data: DesignSystemRawData,
+	options: { extraVisualNames?: ReadonlySet<string> } = {},
+): DashboardData {
 	const categories: CategoryScore[] = [
-		scoreNamingSemantics(data),
+		scoreNamingSemantics(data, options.extraVisualNames),
 		scoreTokenArchitecture(data),
 		scoreComponentMetadata(data),
 		scoreAccessibility(data),

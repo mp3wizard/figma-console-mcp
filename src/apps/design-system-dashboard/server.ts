@@ -22,12 +22,12 @@ import {
 } from "@modelcontextprotocol/ext-apps/server";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { scoreDesignSystem } from "./scoring/engine.js";
 import {
 	describeFixability,
 	getRemediation,
 } from "./scoring/remediation.js";
 import type { DashboardData, DesignSystemRawData } from "./scoring/types.js";
+import { scoreDesignSystemWithTypeSafe } from "./scoring/typesafe-visual-names.js";
 
 const DASHBOARD_URI = "ui://figma-console/design-system-dashboard";
 
@@ -79,7 +79,7 @@ export function registerDesignSystemDashboardApp(
 				// This ensures ds_dashboard_refresh uses the correct file
 				lastFileUrl = fileUrl || getCurrentUrl?.() || undefined;
 				const data = await getDesignSystemData(fileUrl);
-				const scored = scoreDesignSystem(data);
+				const scored = await scoreDesignSystemWithTypeSafe(data);
 
 				const categorySummaries = scored.categories
 					.map((c) => `${c.label}: ${c.score}/100`)
@@ -147,7 +147,7 @@ export function registerDesignSystemDashboardApp(
 			try {
 				const url = fileUrl || lastFileUrl;
 				const data = await getDesignSystemData(url);
-				const scored = scoreDesignSystem(data);
+				const scored = await scoreDesignSystemWithTypeSafe(data);
 
 				return {
 					content: [
@@ -285,7 +285,7 @@ export function registerDesignSystemAuditTool(
 			try {
 				lastFileUrl = fileUrl || getCurrentUrl?.() || lastFileUrl;
 				const data = await getDesignSystemData(fileUrl, forceRefresh);
-				const scored = scoreDesignSystem(data);
+				const scored = await scoreDesignSystemWithTypeSafe(data);
 
 				const clampFinding = (f: any) => ({
 					...f,

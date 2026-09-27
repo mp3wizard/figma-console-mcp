@@ -105,12 +105,8 @@ function containsVisualColorWord(name: string): boolean {
 	);
 }
 
-/**
- * Score variable naming for semantic quality.
- * Variables should use semantic names (color.action.primary) rather than
- * visual names (color.blue.500).
- */
-function scoreVariableNaming(data: DesignSystemRawData): Finding {
+/** Color variables whose names are judged for semantic quality (non-primitive tier). */
+function getSemanticTierColorVars(data: DesignSystemRawData) {
 	// Only judge tokens OUTSIDE the primitive tier: primitives are SUPPOSED to
 	// describe appearance (color/blue/500, color/neutral/black — they're the
 	// palette), and the tooltip's own contract ("semantic names survive theme
@@ -140,6 +136,33 @@ function scoreVariableNaming(data: DesignSystemRawData): Finding {
 			v.resolvedType === "COLOR" &&
 			(v.variableCollectionId ?? "?") !== primitiveCollectionId,
 	);
+	return colorVars;
+}
+
+/**
+ * Names the regex check passes as semantic. These are the only names worth a
+ * second opinion: the regex has no false positives, only compound-name misses
+ * (brand-blue, light-gray, darkgreen).
+ */
+export function getVisualNameCandidates(data: DesignSystemRawData): string[] {
+	return getSemanticTierColorVars(data)
+		.map((v) => v.name)
+		.filter((name) => !containsVisualColorWord(name));
+}
+
+/**
+ * Score variable naming for semantic quality.
+ * Variables should use semantic names (color.action.primary) rather than
+ * visual names (color.blue.500).
+ *
+ * @param extraVisualNames - names an optional external judge (TypeSafe) flagged
+ *   as visual; unioned with the regex result.
+ */
+function scoreVariableNaming(
+	data: DesignSystemRawData,
+	extraVisualNames?: ReadonlySet<string>,
+): Finding {
+	const colorVars = getSemanticTierColorVars(data);
 
 	if (colorVars.length === 0) {
 		return {
@@ -154,7 +177,9 @@ function scoreVariableNaming(data: DesignSystemRawData): Finding {
 	}
 
 	const collectionNames = buildCollectionNameMap(data.collections);
-	const visualVars = colorVars.filter((v) => containsVisualColorWord(v.name));
+	const visualVars = colorVars.filter(
+		(v) => containsVisualColorWord(v.name) || extraVisualNames?.has(v.name),
+	);
 	const semanticRatio = 1 - visualVars.length / colorVars.length;
 	const score = clamp(semanticRatio * 100);
 
@@ -387,9 +412,12 @@ function scoreBooleanNaming(data: DesignSystemRawData): Finding {
  * Naming & Semantics category scorer.
  * Returns the average score across all naming checks.
  */
-export function scoreNamingSemantics(data: DesignSystemRawData): CategoryScore {
+export function scoreNamingSemantics(
+	data: DesignSystemRawData,
+	extraVisualNames?: ReadonlySet<string>,
+): CategoryScore {
 	const findings: Finding[] = [
-		scoreVariableNaming(data),
+		scoreVariableNaming(data, extraVisualNames),
 		scoreComponentNaming(data),
 		scoreVariantNaming(data),
 		scoreBooleanNaming(data),

@@ -1,0 +1,19 @@
+# Figma component/file keys in docs & tests — public identifiers, not secrets
+4e61ad24e2b2fb0a5043da137bc42deede2282b8:docs/tools.md:generic-api-key:1304
+4e61ad24e2b2fb0a5043da137bc42deede2282b8:docs/tools.md:generic-api-key:1309
+4e61ad24e2b2fb0a5043da137bc42deede2282b8:docs/tools.md:generic-api-key:1315
+4e61ad24e2b2fb0a5043da137bc42deede2282b8:tests/library-tools.test.ts:generic-api-key:45
+4e61ad24e2b2fb0a5043da137bc42deede2282b8:tests/library-tools.test.ts:generic-api-key:46
+5ed872a66e2f2dadf5518fc92c7eacd1ef7dfb77:Security review report/security-review-2026-04-02.md:generic-api-key:28
+5ed872a66e2f2dadf5518fc92c7eacd1ef7dfb77:Security review report/security-review-2026-04-02.md:generic-api-key:38
+5ed872a66e2f2dadf5518fc92c7eacd1ef7dfb77:Security review report/security-review-2026-04-02.md:generic-api-key:41
+5ed872a66e2f2dadf5518fc92c7eacd1ef7dfb77:Security review report/security-review-2026-04-02.md:generic-api-key:46
+5ed872a66e2f2dadf5518fc92c7eacd1ef7dfb77:Security review report/security-review-2026-04-02.md:generic-api-key:49
+5ed872a66e2f2dadf5518fc92c7eacd1ef7dfb77:Security review report/security-review-2026-04-02.md:generic-api-key:54
+ae19af8aa7e9452aa83a4a5bf25773708c33d762:docs/tools.md:generic-api-key:1160
+ae19af8aa7e9452aa83a4a5bf25773708c33d762:docs/tools.md:generic-api-key:1184
+415ba542916162fcf4e94681f59d3da4309a1afb:docs/TOOLS.md:generic-api-key:874
+415ba542916162fcf4e94681f59d3da4309a1afb:docs/TOOLS.md:generic-api-key:898
+27970329266b16e4148b123fd63ebb472c03f101:docs/TROUBLESHOOTING-MISSING-DESCRIPTIONS.md:generic-api-key:186
+d7a649e12862842afeb6290e4f87245798cb6d96:docs/DOM_BASED_VARIABLE_EXTRACTION_FEASIBILITY.md:generic-api-key:808
+b05ad1f833b28507dcc9ec4ebd72dd48e46935a6:docs/DOM_BASED_VARIABLE_EXTRACTION_FEASIBILITY.md:generic-api-key:808
