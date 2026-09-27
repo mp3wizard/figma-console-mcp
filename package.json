@@ -78,7 +78,7 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.2.5",
-		"@cloudflare/puppeteer": "^1.0.4",
+		"@cloudflare/puppeteer": "^1.4.0",
 		"@types/jest": "^29.5.14",
 		"@types/jsdom": "^28.0.1",
 		"@types/node": "^22.10.2",
@@ -92,7 +92,7 @@
 		"typescript": "5.9.3",
 		"vite": "^6.4.2",
 		"vite-plugin-singlefile": "^2.0.0",
-		"wrangler": "4.135.0",
+		"wrangler": "^4.142.0",
 		"zod-to-json-schema": "^3.25.1"
 	},
 	"overrides": {
