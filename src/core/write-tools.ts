@@ -49,7 +49,7 @@ Layers: If your code creates helper frames, placeholder nodes, or intermediate l
 				.optional()
 				.default(5000)
 				.describe(
-					"Execution timeout in milliseconds (default: 5000, max: 30000)",
+					"Execution timeout in milliseconds (default: 5000, max: 300000)",
 				),
 			fileKey: z
 				.string()
@@ -63,7 +63,7 @@ Layers: If your code creates helper frames, placeholder nodes, or intermediate l
 				const connector = await getDesktopConnector();
 				const result = await connector.executeCodeViaUI(
 					code,
-					Math.min(timeout, 30000),
+					Math.min(timeout, 300000),
 					fileKey,
 				);
 
@@ -89,16 +89,19 @@ Layers: If your code creates helper frames, placeholder nodes, or intermediate l
 					{ error },
 					"Failed to execute code in Figma plugin context",
 				);
+				const errorMessage = error instanceof Error ? error.message : String(error);
+				const busy = /timed out|still busy/.test(errorMessage);
 				return {
 					content: [
 						{
 							type: "text" as const,
 							text: JSON.stringify(
 								{
-									error:
-										error instanceof Error ? error.message : String(error),
+									error: errorMessage,
 									message: "Failed to execute code in Figma plugin context",
-									hint: "Make sure the Desktop Bridge plugin is running in Figma",
+									hint: busy
+										? "Figma can't stop a running script. Wait for it to finish (or close and reopen the Desktop Bridge plugin), then retry. For long scripts, pass a larger timeout (up to 300000 ms) or split the work into smaller calls."
+										: "Make sure the Desktop Bridge plugin is running in Figma",
 								},
 							),
 						},
@@ -699,7 +702,7 @@ Layers: If your code creates helper frames, placeholder nodes, or intermediate l
 							)
 							.optional()
 							.describe(
-								"Values by mode ID. For COLOR: hex like '#FF0000'. Example: { '1:0': '#FF0000' }",
+								"Values by mode ID. For COLOR: hex like '#FF0000'. To alias another variable, pass its ID (e.g. 'VariableID:1:23') as the value. Example: { '1:0': '#FF0000' }",
 							),
 					}),
 				)
@@ -736,7 +739,9 @@ for (const v of vars) {
     if (v.description) variable.description = v.description;
     if (v.valuesByMode) {
       for (const [modeId, value] of Object.entries(v.valuesByMode)) {
-        const processed = v.resolvedType === 'COLOR' && typeof value === 'string' ? hexToRgba(value) : value;
+        const processed = typeof value === 'string' && value.startsWith('VariableID:')
+          ? { type: 'VARIABLE_ALIAS', id: value }
+          : v.resolvedType === 'COLOR' && typeof value === 'string' ? hexToRgba(value) : value;
         variable.setValueForMode(modeId, processed);
       }
     }
@@ -1128,7 +1133,9 @@ for (const entry of createdDefs) {
         }
         variable.setValueForMode(modeId, figma.variables.createVariableAlias(target));
       } else {
-        const processed = t.resolvedType === 'COLOR' && typeof value === 'string' ? hexToRgba(value) : value;
+        const processed = typeof value === 'string' && value.startsWith('VariableID:')
+          ? { type: 'VARIABLE_ALIAS', id: value }
+          : t.resolvedType === 'COLOR' && typeof value === 'string' ? hexToRgba(value) : value;
         variable.setValueForMode(modeId, processed);
       }
     } catch (err) {
@@ -1245,7 +1252,7 @@ After instantiating components, use figma_take_screenshot to verify the result l
 					"The node ID from search results. ALWAYS pass this alongside componentKey - most local components need it.",
 				),
 			variant: z
-				.record(z.string())
+				.record(z.string(), z.string())
 				.optional()
 				.describe(
 					"Variant properties to set (e.g., { Type: 'Simple', State: 'Active' })",
@@ -2418,26 +2425,38 @@ const csWidth = (totalCols * cellWidth) + ((totalCols - 1) * gap) + (edgePadding
 const csHeight = (totalRows * cellHeight) + ((totalRows - 1) * gap) + (edgePadding * 2);
 
 // ============================================================================
-// STEP 1: Remove old labels and container frames from previous arrangements
+// STEP 1: Remove THIS set's previous arrangement (and only this set's).
+// Other sets' "Component Container" frames hold those component sets, so a
+// page-wide cleanup deleted every other arranged set with its variants (#53).
 // ============================================================================
-const isOldArrangementElement = (n) =>
-	(n.type === "TEXT" && (n.name.startsWith("Row: ") || n.name.startsWith("Col: "))) ||
-	(n.type === "FRAME" && (n.name === "Component Container" || n.name === "Row Labels" || n.name === "Column Headers"));
+const ARRANGED_SET_KEY = "arrangedComponentSetId";
+const isArrangementContainer = (n) => n.type === "FRAME" && n.name === "Component Container";
 
-// If the set lives inside a previous arrangement container (re-run case),
-// pull it out to the page first so cleanup can't delete it
+// Re-run case: the set lives inside its previous container. Pull it out to the
+// page first, then remove that container.
+const previousContainers = [];
 let ancestor = componentSet.parent;
 while (ancestor && ancestor.type !== "PAGE") {
-	if (isOldArrangementElement(ancestor)) {
-		page.appendChild(componentSet);
-		break;
-	}
+	if (isArrangementContainer(ancestor)) previousContainers.push(ancestor);
 	ancestor = ancestor.parent;
 }
-
-const oldElements = page.children.filter(isOldArrangementElement);
-for (const el of oldElements) {
-	el.remove();
+if (previousContainers.length > 0) {
+	page.appendChild(componentSet);
+}
+// A previous container of this set that it was later moved out of (tagged
+// by this tool since #53).
+for (const n of page.children) {
+	if (isArrangementContainer(n) && n.getPluginData(ARRANGED_SET_KEY) === componentSet.id && previousContainers.indexOf(n) === -1) {
+		previousContainers.push(n);
+	}
+}
+// Never remove a container that still holds another component set: a
+// duplicated container (Figma copies pluginData) or a hand-nested layout
+// would otherwise take that set and its variants with it.
+for (const el of previousContainers) {
+	if (el.removed) continue;
+	const holdsOtherSet = el.findAllWithCriteria({ types: ["COMPONENT_SET"] }).some((n) => n.id !== componentSet.id);
+	if (!holdsOtherSet) el.remove();
 }
 
 // ============================================================================
@@ -2513,6 +2532,7 @@ await figma.loadFontAsync({ family: "Inter", style: "Semi Bold" });
 // Create the main container frame (white background)
 const containerFrame = figma.createFrame();
 containerFrame.name = "Component Container";
+containerFrame.setPluginData(ARRANGED_SET_KEY, componentSet.id);
 containerFrame.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }];  // White
 containerFrame.cornerRadius = 8;
 containerFrame.layoutMode = 'VERTICAL';
@@ -2864,7 +2884,7 @@ SIZE GUIDANCE: hard cap 100 variants. The timeout auto-scales with variant count
 					"Node IDs of existing COMPONENT nodes to combine as variants. Mutually exclusive with baseComponentId. Components already inside a component set are rejected.",
 				),
 			variantProperties: z
-				.array(z.record(z.string()))
+				.array(z.record(z.string(), z.string()))
 				.optional()
 				.describe(
 					"Only with componentIds: one property map per component, aligned by index — e.g. [{ State: 'default' }, { State: 'hover' }]. Each component is renamed to 'Prop=Value, ...' before combining. Without this, existing names are kept (names lacking '=' become 'Property 1=<name>').",

@@ -80,7 +80,7 @@ This guide provides detailed documentation for each tool, including when to use 
 | | `figma_setup_design_tokens` | Create collection + modes + variables atomically | Local / Cloud |
 | **🔍 Design-Code Parity** | `figma_check_design_parity` | Compare Figma specs vs code implementation | All |
 | | `figma_generate_component_doc` | Generate component documentation from Figma + code, with optional Figma version + git history | All |
-| **💬 Comments** | `figma_get_comments` | Get comments on a Figma file | All |
+| **💬 Comments** | `figma_get_comments` | Get comment threads on a Figma file, filtered by node, thread or date | All |
 | | `figma_post_comment` | Post a comment, optionally pinned to a node | All |
 | | `figma_delete_comment` | Delete a comment by ID | All |
 | **📝 Annotations** | `figma_get_annotations` | Read annotations from nodes (with optional child traversal) | Local / Cloud |
@@ -184,6 +184,11 @@ figma_get_status()
   - `setup.transport` - Transport status (`websocket` or `none`)
   - `setup.setupInstructions` - Step-by-step setup guide (if no transport available)
   - `setup.ai_instruction` - Guidance for AI assistants
+- **Transport** (local mode):
+  - `transport.websocket.connectedFiles` - Every file with the Desktop Bridge open, with plugin version and whether an update is available
+  - `transport.websocket.port` / `preferredPort` / `portFallbackUsed` - Which bridge port this server bound
+  - `transport.websocket.otherInstances` - Other running servers (port, PID, start time, and `mcpHttpUrl` if they serve HTTP)
+  - `transport.mcpHttp` - The optional HTTP endpoint: `{ url, sessions, auth }` when `FIGMA_MCP_HTTP_PORT` is set, or `{ error }` if it couldn't start
 - Browser connection status
 - Console monitoring active/inactive
 - Current URL (if navigated)
@@ -255,8 +260,7 @@ figma_diagnose({
 
 ### `figma_get_console_logs`
 
-> **💡 Plugin Developers in Local Mode**: This tool works immediately - no navigation required!
-> Just check logs, run your plugin in Figma Desktop, check logs again. All `[Main]`, `[Swapper]`, etc. plugin logs appear instantly.
+> **Scope:** captures console output from the Desktop Bridge plugin's sandbox — code run through `figma_execute` and the write tools, plus the bridge itself. It cannot see another plugin's console: Figma runs one plugin at a time in a file, each in an isolated sandbox. To debug your own plugin, run its logic through `figma_execute`, or use Figma's DevTools (Help → Debugging → Open DevTools). See [Plugin Development & Debugging](use-cases.md#-plugin-development--debugging).
 
 Retrieve console logs with filters.
 
@@ -314,7 +318,7 @@ figma_watch_console({
 - Real-time stream of console logs captured during the watch period
 - Summary of total logs captured by level
 
-**Use case:** Perfect for monitoring console output while you test your plugin manually.
+**Use case:** Watching console output from long-running `figma_execute` scripts or bridge operations. Like `figma_get_console_logs`, it only sees the Desktop Bridge plugin's sandbox, not other plugins.
 
 ---
 
@@ -1129,7 +1133,7 @@ figma_execute({
 
 **Parameters:**
 - `code` (required): JavaScript code to execute. Has access to `figma` global object.
-- `timeout` (optional): Execution timeout in ms (default: 5000, max: 30000)
+- `timeout` (optional): Execution timeout in ms (default: 5000, max: 300000)
 - `fileKey` (optional, **Local Mode only**): Run against a specific connected file instead of the active one, without changing the active file or releasing target lock. Get connected fileKeys from `figma_list_open_files`. Cloud Mode pairs with a single plugin instance and rejects this parameter rather than silently running against the paired file.
 
 **Returns:**
@@ -1786,7 +1790,7 @@ figma_get_library_component_by_key({
 - `compression` (only when stripped): `{ originalSizeKB, finalSizeKB, strippedVisualSpecs: true }`
 - `warnings[]`: non-fatal issues (e.g. variant-key resolution skipped)
 
-**Plan requirements:** Works on **all Figma plans**. Requires `FIGMA_ACCESS_TOKEN` with `library_assets:read` + `files:read` scopes.
+**Plan requirements:** Works on **all Figma plans**. Requires `FIGMA_ACCESS_TOKEN` with the **Library assets** (`library_assets:read`) scope for the key lookup, plus **File content** (`file_content:read`) and **Library content** (`library_content:read`) for the published file's node and component data.
 
 ---
 
@@ -2785,7 +2789,7 @@ Any `codeInfo.changelog` entries you pass are still rendered, folded in as **Rel
 **Coverage limits** — the generated doc states these inline so an empty table is never misread as "nothing changed":
 - Figma's REST version snapshots **omit description and Dev Mode annotation edits**, raw layout/visual properties, and variable *value* changes. Structure (child layers), component property definitions, variable *bindings*, and renames are tracked, at depth 2
 - Version-history retention is plan-dependent, so lower tiers expose a shorter window
-- Reading version history requires the `file_versions:read` OAuth scope, or the **Versions** Read permission on a Personal Access Token. Without it the section degrades to an explanatory note rather than failing the doc
+- Reading version history requires the `file_versions:read` OAuth scope, or the **File versions** Read scope on a Personal Access Token. Without it the section degrades to an explanatory note rather than failing the doc
 - `git` history uses `--follow` (renames traced) only when exactly one path is resolved — git supports it for a single pathspec only
 
 ---
@@ -2794,30 +2798,38 @@ Any `codeInfo.changelog` entries you pass are still rendered, folded in as **Rel
 
 ### `figma_get_comments`
 
-Get comments on a Figma file. Returns comment threads with author, message, timestamps, and pinned node locations.
+Get comment threads on a Figma file. Each result is a root comment with its replies, sorted by latest activity, in a compact format by default.
 
 **When to Use:**
 - Reviewing feedback threads on a design file
-- Checking for open comments before a release
+- Checking for open comments on one component before a release
 - Retrieving comment IDs to reply to or delete
 
 **Usage:**
 ```javascript
 figma_get_comments({
   fileUrl: 'https://figma.com/design/abc123',
-  include_resolved: false,
-  as_md: true
+  node_id: '695:313',        // threads on this node and anything inside it
+  since: '2026-10-01',
+  limit: 30
 })
 ```
 
 **Parameters:**
-- `fileUrl` (optional): Figma file URL (uses current URL if omitted)
+- `fileUrl` (optional): Figma file URL (uses current URL if omitted). A `node-id` in the URL does not filter comments; pass `node_id`.
 - `as_md` (optional): Return comment message bodies as markdown (default: false)
-- `include_resolved` (optional): Include resolved comment threads (default: false)
+- `include_resolved` (optional): Include resolved threads (default: false)
+- `node_id` (optional): Only threads pinned to this node (`695:313` or `695-313`)
+- `include_nested` (optional): With `node_id`, also match threads pinned to nodes inside it (default: true)
+- `thread_id` (optional): Only the thread containing this comment ID (root or reply), even if resolved
+- `since` (optional): ISO date/time; only threads with activity at or after it
+- `limit` (optional): Maximum threads to return, 1–200 (default: 30)
+- `offset` (optional): Threads to skip, for paging (default: 0)
+- `format` (optional): `compact` (default) or `full` for raw Figma API comment objects
 
 **Returns:**
-- `comments`: Array of comment objects with `id`, `message`, `user`, `created_at`, `resolved_at`, `client_meta` (pinned location)
-- `summary`: Total, active, resolved, and returned counts
+- `comments`: Threads. Compact threads have `id`, `author`, `created_at`, `message`, `node_id`, `resolved_at`, `reactions` (counts by emoji) and `replies`.
+- `summary`: `total`, `active` and `resolved` thread counts; `comments_total` (every comment, including replies); `matched` (threads that passed the filters); `returned`, `offset` and `has_more` for paging
 
 ---
 

@@ -33,6 +33,8 @@ import {
   startPeriodicReaper,
   evictOldestInstance,
   refreshPortAdvertisement,
+  noteToolCall,
+  setAdvertisedMcpHttpUrl,
   isStaleInstance,
   PortFileData,
 } from '../src/core/port-discovery.js';
@@ -486,6 +488,89 @@ describe('Port Discovery Module', () => {
       expect(result).toBe(false);
     });
 
+    describe('least recently used (#69)', () => {
+      const children: ReturnType<typeof spawn>[] = [];
+      const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+      const MIN = 60 * 1000;
+
+      /** A live process standing in for another MCP server, with its port file. */
+      function fakeServer(offset: number, startedAgo: number, lastToolCallAgo?: number) {
+        const child = spawn('sleep', ['30'], { stdio: 'ignore' });
+        children.push(child);
+        const data: PortFileData = {
+          port: TEST_PORT_BASE + offset,
+          pid: child.pid!,
+          host: 'localhost',
+          startedAt: ago(startedAgo),
+          lastSeen: new Date().toISOString(),
+          ...(lastToolCallAgo !== undefined ? { lastToolCall: ago(lastToolCallAgo) } : {}),
+        };
+        writeFileSync(getPortFilePath(data.port), JSON.stringify(data));
+        return data.port;
+      }
+
+      afterEach(() => {
+        for (const c of children.splice(0)) {
+          try { c.kill('SIGKILL'); } catch { /* already gone */ }
+        }
+      });
+
+      it('writes a tool call to our own port file right away', () => {
+        const port = TEST_PORT_BASE + 4;
+        advertisePort(port);
+        try {
+          expect(readPortFile(port)?.lastToolCall).toBeUndefined();
+          noteToolCall();
+          const written = readPortFile(port)?.lastToolCall;
+          expect(written).toBeDefined();
+          expect(Date.now() - new Date(written!).getTime()).toBeLessThan(5000);
+        } finally {
+          unadvertisePort(port);
+        }
+      });
+
+      it('advertises the HTTP MCP endpoint, and drops it when cleared', () => {
+        const port = TEST_PORT_BASE + 5;
+        advertisePort(port);
+        try {
+          setAdvertisedMcpHttpUrl('http://127.0.0.1:3845/mcp');
+          expect(readPortFile(port)?.mcpHttpUrl).toBe('http://127.0.0.1:3845/mcp');
+          setAdvertisedMcpHttpUrl(undefined);
+          expect(readPortFile(port)?.mcpHttpUrl).toBeUndefined();
+        } finally {
+          setAdvertisedMcpHttpUrl(undefined);
+          unadvertisePort(port);
+        }
+      });
+
+      it('evicts a server that never handled a tool call before an older one in use', () => {
+        const inUse = fakeServer(0, 120 * MIN, 3 * MIN);
+        const idle = fakeServer(1, 30 * MIN);
+
+        expect(evictOldestInstance(TEST_PORT_BASE)).toBe(true);
+        expect(existsSync(getPortFilePath(idle))).toBe(false);
+        expect(existsSync(getPortFilePath(inUse))).toBe(true);
+      });
+
+      it('evicts the server whose last tool call is oldest', () => {
+        const recent = fakeServer(0, 120 * MIN, 5 * MIN);
+        const stale = fakeServer(1, 60 * MIN, 50 * MIN);
+
+        expect(evictOldestInstance(TEST_PORT_BASE)).toBe(true);
+        expect(existsSync(getPortFilePath(stale))).toBe(false);
+        expect(existsSync(getPortFilePath(recent))).toBe(true);
+      });
+
+      it('never evicts a server that handled a tool call in the last two minutes', () => {
+        const a = fakeServer(0, 120 * MIN, 30 * 1000);
+        const b = fakeServer(1, 60 * MIN, 10 * 1000);
+
+        expect(evictOldestInstance(TEST_PORT_BASE)).toBe(false);
+        expect(existsSync(getPortFilePath(a))).toBe(true);
+        expect(existsSync(getPortFilePath(b))).toBe(true);
+      });
+    });
+
     it('should have sensible eviction minimum age', () => {
       // Eviction min age should be at least 1 minute
       expect(EVICTION_MIN_AGE_MS).toBeGreaterThanOrEqual(60 * 1000);
@@ -654,6 +739,9 @@ describe('cleanupOrphanedProcesses — SIGKILL escalation (integration)', () => 
   const spawnOrphan = async (port: number, ignoreSigterm: boolean) => {
     const dir = mkdtempSync(join(tmpdir(), 'fcm-orphan-'));
     const file = join(dir, 'local.js');
+    // Pin CommonJS: a stray package.json with "type": "module" anywhere above
+    // the temp dir would otherwise make this require()-based script crash.
+    writeFileSync(join(dir, 'package.json'), '{"type":"commonjs"}');
     writeFileSync(
       file,
       `const net = require('net');\n` +

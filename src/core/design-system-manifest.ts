@@ -300,6 +300,18 @@ export interface ComponentSearchResult {
  * surface in that case, or null when the search can proceed (including a
  * genuinely empty file, which loads WITHOUT a warning).
  */
+/**
+ * Unwrap a connector.getVariables() response. That call runs through
+ * EXECUTE_CODE, whose reply nests the script's return value under `result`
+ * ({ success, result: { variables, variableCollections } }). Reading `.data`
+ * instead (as the design-system cache did) silently yields zero tokens.
+ */
+export function unwrapBridgeVariables(raw: any): { variables: any[]; variableCollections: any[] } | null {
+	const data = raw?.result?.variables ? raw.result : raw?.data?.variables ? raw.data : raw;
+	if (!data || data.success === false || !Array.isArray(data.variables)) return null;
+	return { variables: data.variables, variableCollections: data.variableCollections || [] };
+}
+
 export function componentSearchLoadFailure(
 	manifest: DesignSystemManifest,
 	loadWarning: string | undefined,
@@ -368,6 +380,21 @@ export function searchComponents(
 				defaultSize: comp.defaultSize,
 			});
 		}
+	}
+
+	// Rank by relevance (results used to come back in file order, so a set
+	// whose DESCRIPTION mentioned "button" could outrank the Button set).
+	// Stable sort: within a tier, sets stay ahead of standalone components.
+	if (queryLower) {
+		const tier = (r: ComponentSearchResult): number => {
+			const n = r.name.toLowerCase();
+			if (n === queryLower) return 0;
+			if (n.startsWith(queryLower)) return 1;
+			if (n.split(/[\s/_\-=,.]+/).includes(queryLower)) return 2;
+			if (n.includes(queryLower)) return 3;
+			return 4; // description-only match
+		};
+		allResults.sort((a, b) => tier(a) - tier(b));
 	}
 
 	const total = allResults.length;

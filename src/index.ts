@@ -28,6 +28,7 @@ import { registerDesignSystemTools } from "./core/design-system-tools.js";
 import { registerLibraryTools, registerLibraryVariableTools } from "./core/library-tools.js";
 import { registerDiagnoseTool } from "./core/diagnose-tool.js";
 import { wrapServerForIdentity } from "./core/identity.js";
+import { isFigmaPAT, validateFigmaPAT } from "./core/figma-pat.js";
 import { PluginRelayDO, generatePairingCode } from "./core/cloud-websocket-relay.js";
 import { CloudWebSocketConnector } from "./core/cloud-websocket-connector.js";
 import { registerWriteTools } from "./core/write-tools.js";
@@ -35,6 +36,7 @@ import { registerTokensTools } from "./core/tokens-tools.js";
 import { registerFigJamTools } from "./core/figjam-tools.js";
 import { registerSlidesTools } from "./core/slides-tools.js";
 import { registerSlotTools } from "./core/slot-tools.js";
+import { escapeHtml, isAllowedRedirectUri, isLoopbackOrTrustedRedirect, mintSseSessionId, readCookie, sseSessionBelongsTo, verifyPkceS256 } from "./core/oauth-security.js";
 
 // Re-export PluginRelayDO so Cloudflare Workers can bind it as a Durable Object
 export { PluginRelayDO } from "./core/cloud-websocket-relay.js";
@@ -44,29 +46,55 @@ export { PluginRelayDO } from "./core/cloud-websocket-relay.js";
 const logger = createChildLogger({ component: "mcp-server" });
 
 /**
- * Validate a Figma Personal Access Token (PAT) by calling the Figma API.
- * PATs start with 'figd_' and require the X-Figma-Token header (not Bearer).
- * Returns the user info if valid, null if invalid/expired.
+ * Scopes requested at Cloud Mode sign-in, advertised in OAuth metadata and
+ * echoed in token responses. Each must also be enabled on the Figma OAuth
+ * app. library_assets:read covers lookups by component/style key.
  */
-async function validateFigmaPAT(token: string): Promise<{ id: string; handle: string; email: string } | null> {
-	try {
-		const response = await fetch("https://api.figma.com/v1/me", {
-			headers: { "X-Figma-Token": token },
-		});
-		if (!response.ok) return null;
-		const data = await response.json() as { id: string; handle: string; email: string };
-		return data?.id ? data : null;
-	} catch {
-		return null;
-	}
-}
+const FIGMA_OAUTH_SCOPES = [
+	"file_content:read",
+	"file_versions:read",
+	"file_variables:read",
+	"file_comments:read",
+	"file_comments:write",
+	"library_content:read",
+	"library_assets:read",
+];
 
 /**
- * Check if a token is a Figma Personal Access Token.
- * PATs start with 'figd_' — OAuth tokens start with 'figu_'.
+ * Serve the legacy /sse transport with the caller's already-verified Figma
+ * token attached as Durable Object props, so the session's getFigmaAPI()
+ * uses this user's token and nobody else's.
  */
-function isFigmaPAT(token: string): boolean {
-	return token.startsWith("figd_");
+/** Per-flow cookie name, so concurrent sign-ins in one browser don't collide. */
+function flowCookieName(stateToken: string): string {
+	return `fcm_flow_${stateToken.slice(0, 16)}`;
+}
+
+async function serveSSEWithToken(request: Request, env: Env, ctx: ExecutionContext, figmaAccessToken: string): Promise<Response> {
+	// The Durable Object takes props once, when the session starts, so a later
+	// request on the same session must not be able to swap in another user's
+	// token or reach another user's session. Session ids are minted here and
+	// carry an HMAC of the opening token; every request naming a session must
+	// present that same token.
+	const secret = env.FIGMA_OAUTH_CLIENT_SECRET || "figma-console-mcp-dev-only";
+	const url = new URL(request.url);
+	const requested = url.searchParams.get("sessionId");
+	if (requested) {
+		if (!(await sseSessionBelongsTo(secret, requested, figmaAccessToken))) {
+			return new Response(JSON.stringify({
+				error: "invalid_token",
+				error_description: "This session was opened with different credentials. Reconnect to start a new session."
+			}), {
+				status: 401,
+				headers: { "Content-Type": "application/json", "WWW-Authenticate": 'Bearer error="invalid_token"' }
+			});
+		}
+	} else if (url.pathname === "/sse") {
+		url.searchParams.set("sessionId", await mintSseSessionId(secret, figmaAccessToken));
+		request = new Request(url.toString(), request);
+	}
+	(ctx as ExecutionContext & { props?: Record<string, unknown> }).props = { figmaAccessToken };
+	return FigmaConsoleMCPv3.serveSSE("/sse").fetch(request, env, ctx);
 }
 
 /**
@@ -75,13 +103,18 @@ function isFigmaPAT(token: string): boolean {
  */
 // Server version reported by figma_diagnose in both cloud endpoints.
 // scripts/release.sh keeps this current (it rewrites every `version: "x.y.z"` here).
-const cloudBuild = { version: "1.40.10" };
+const cloudBuild = { version: "1.44.2" };
 
 export class FigmaConsoleMCPv3 extends McpAgent {
+	// agents 0.7 types `server` against its own nested SDK 1.26 copy; ours is
+	// 1.32 (security fixes). Only connect() and the transport interface cross
+	// that boundary, and both are unchanged between the two. Moving to agents
+	// 0.30+ removes the split but needs a newer workerd and compatibility_date.
+	// @ts-expect-error -- same McpServer class from two SDK copies
 	server = (() => {
 		const s = new McpServer({
 			name: "Figma Console MCP",
-			version: "1.40.10",
+			version: "1.44.2",
 		});
 		// Identity wrap — every tool's response and thrown error gets stamped
 		// with our MCP name so cross-MCP attribution is unambiguous.
@@ -94,76 +127,6 @@ export class FigmaConsoleMCPv3 extends McpAgent {
 	private figmaAPI: FigmaAPI | null = null;
 	private config = getConfig();
 	private sessionId: string | null = null;
-
-	/**
-	 * Refresh an expired OAuth token using the refresh token
-	 */
-	private async refreshOAuthToken(sessionId: string, refreshToken: string): Promise<{
-		accessToken: string;
-		refreshToken?: string;
-		expiresAt: number;
-	}> {
-		const env = this.env as unknown as Env;
-
-		if (!env.FIGMA_OAUTH_CLIENT_ID || !env.FIGMA_OAUTH_CLIENT_SECRET) {
-			throw new Error("OAuth not configured on server");
-		}
-
-		logger.info({ sessionId }, "Attempting to refresh OAuth token");
-
-		const credentials = btoa(`${env.FIGMA_OAUTH_CLIENT_ID}:${env.FIGMA_OAUTH_CLIENT_SECRET}`);
-
-		const tokenParams = new URLSearchParams({
-			grant_type: "refresh_token",
-			refresh_token: refreshToken
-		});
-
-		const tokenResponse = await fetch("https://api.figma.com/v1/oauth/token", {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/x-www-form-urlencoded",
-				"Authorization": `Basic ${credentials}`
-			},
-			body: tokenParams.toString()
-		});
-
-		if (!tokenResponse.ok) {
-			const errorData = await tokenResponse.json().catch(() => ({}));
-			logger.error({ errorData, status: tokenResponse.status }, "Token refresh failed");
-			throw new Error(`Token refresh failed: ${JSON.stringify(errorData)}`);
-		}
-
-		const tokenData = await tokenResponse.json() as {
-			access_token: string;
-			refresh_token?: string;
-			expires_in: number;
-		};
-
-		// Store refreshed token in KV
-		const tokenKey = `oauth_token:${sessionId}`;
-		const storedToken = {
-			accessToken: tokenData.access_token,
-			refreshToken: tokenData.refresh_token || refreshToken, // Use new refresh token or keep existing
-			expiresAt: Date.now() + (tokenData.expires_in * 1000)
-		};
-
-		await env.OAUTH_TOKENS.put(tokenKey, JSON.stringify(storedToken), {
-			expirationTtl: tokenData.expires_in
-		});
-
-		// Store reverse lookup for Bearer token validation on SSE endpoint
-		const bearerKey = `bearer_token:${tokenData.access_token}`;
-		await env.OAUTH_TOKENS.put(bearerKey, JSON.stringify({
-			sessionId,
-			expiresAt: storedToken.expiresAt
-		}), {
-			expirationTtl: tokenData.expires_in
-		});
-
-		logger.info({ sessionId }, "OAuth token refreshed successfully");
-
-		return storedToken;
-	}
 
 	/**
 	 * Generate a cryptographically secure random state token for CSRF protection
@@ -230,112 +193,36 @@ export class FigmaConsoleMCPv3 extends McpAgent {
 	}
 
 	/**
-	 * Get or create Figma API client with OAuth token from session
+	 * Get a Figma API client for the user on THIS connection.
+	 *
+	 * The /sse handler validates the caller's Bearer token (OAuth access token
+	 * or Figma PAT) and hands it to this Durable Object as `props`, so every
+	 * session uses its own user's token. There is deliberately no shared KV
+	 * fallback: tokens used to be copied into one fixed slot that every
+	 * session read, which made REST calls run with whichever user had
+	 * authenticated most recently.
 	 */
 	private async getFigmaAPI(): Promise<FigmaAPI> {
-		// Ensure session ID is loaded from storage
-		await this.ensureSessionId();
-
-		// @ts-ignore - this.env is available in Agent/Durable Object context
-		const env = this.env as Env;
-
-		// Try OAuth first (per-user authentication)
-		try {
-			const sessionId = this.getSessionId();
-			logger.info({ sessionId }, "Attempting to retrieve OAuth token from KV");
-
-			// Retrieve token from KV (accessible across all Durable Object instances)
-			const tokenKey = `oauth_token:${sessionId}`;
-			const tokenJson = await env.OAUTH_TOKENS.get(tokenKey);
-
-			if (!tokenJson) {
-				logger.warn({ sessionId, tokenKey }, "No OAuth token found in KV");
-				throw new Error("No token found");
-			}
-
-			let tokenData = JSON.parse(tokenJson) as {
-				accessToken: string;
-				refreshToken?: string;
-				expiresAt: number;
-			};
-
-			logger.info({
-				sessionId,
-				hasToken: !!tokenData?.accessToken,
-				expiresAt: tokenData?.expiresAt,
-				isExpired: tokenData?.expiresAt ? Date.now() > tokenData.expiresAt : null
-			}, "Token retrieval result from KV");
-
-			if (tokenData?.accessToken) {
-				// Check if token is expired or will expire soon (within 5 minutes)
-				const isExpired = tokenData.expiresAt && Date.now() > tokenData.expiresAt;
-				const willExpireSoon = tokenData.expiresAt && Date.now() > (tokenData.expiresAt - 5 * 60 * 1000);
-
-				if (isExpired || willExpireSoon) {
-					if (tokenData.refreshToken) {
-						try {
-							// Attempt to refresh the token
-							tokenData = await this.refreshOAuthToken(sessionId, tokenData.refreshToken);
-							logger.info({ sessionId }, "Successfully refreshed expired/expiring token");
-						} catch (refreshError) {
-							logger.error({ sessionId, refreshError }, "Failed to refresh token");
-							throw new Error("Token expired and refresh failed. Please re-authenticate.");
-						}
-					} else {
-						logger.warn({ sessionId }, "Token expired but no refresh token available");
-						throw new Error("Token expired. Please re-authenticate.");
-					}
-				}
-
-				logger.info({ sessionId }, "Using OAuth token from KV for Figma API");
-				return new FigmaAPI({ accessToken: tokenData.accessToken });
-			}
-
-			logger.warn({ sessionId }, "OAuth token exists in KV but missing accessToken");
-			throw new Error("Invalid token data");
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : String(error);
-			const sessionId = this.getSessionId();
-
-			// Check if this is a "no token found" error (user hasn't authenticated yet)
-			if (errorMessage.includes("No token found")) {
-				logger.info({ sessionId }, "No OAuth token found - user needs to authenticate");
-
-				// No authentication available - direct user to OAuth flow
-				const authUrl = `https://figma-console-mcp.southleft.com/oauth/authorize?session_id=${sessionId}`;
-
-				// Only use PAT fallback if explicitly configured AND no OAuth token exists
-				if (env?.FIGMA_ACCESS_TOKEN) {
-					logger.warn(
-						"FIGMA_ACCESS_TOKEN fallback is deprecated. User should authenticate via OAuth for proper per-user authentication."
-					);
-					return new FigmaAPI({ accessToken: env.FIGMA_ACCESS_TOKEN });
-				}
-
-				throw new Error(
-					JSON.stringify({
-						error: "authentication_required",
-						message: "Please authenticate with Figma to use API features",
-						auth_url: authUrl,
-						instructions: "Your browser will open automatically to complete authentication. If it doesn't, copy the auth_url and open it manually."
-					})
-				);
-			}
-
-			// For other OAuth errors (expired token, refresh failed, etc.), do NOT fall back to PAT
-			logger.error({ error, sessionId }, "OAuth token retrieval failed - re-authentication required");
-
-			const authUrl = `https://figma-console-mcp.southleft.com/oauth/authorize?session_id=${sessionId}`;
-
-			throw new Error(
-				JSON.stringify({
-					error: "oauth_error",
-					message: errorMessage,
-					auth_url: authUrl,
-					instructions: "Please re-authenticate with Figma. Your browser will open automatically."
-				})
-			);
+		const env = this.env as unknown as Env;
+		const propsToken = (this.props as { figmaAccessToken?: string } | undefined)?.figmaAccessToken;
+		if (propsToken) {
+			return new FigmaAPI({ accessToken: propsToken });
 		}
+
+		if (env?.FIGMA_ACCESS_TOKEN) {
+			logger.warn(
+				"FIGMA_ACCESS_TOKEN fallback is deprecated. User should authenticate via OAuth for proper per-user authentication."
+			);
+			return new FigmaAPI({ accessToken: env.FIGMA_ACCESS_TOKEN });
+		}
+
+		throw new Error(
+			JSON.stringify({
+				error: "authentication_required",
+				message: "This session has no Figma credentials. Reconnect your MCP client to sign in to Figma again.",
+				instructions: "Disconnect and reconnect the Figma Console MCP connector (or restart your MCP client) to run the OAuth sign-in.",
+			})
+		);
 	}
 
 	/**
@@ -1195,18 +1082,10 @@ export default {
 					});
 				}
 
-				// Store PAT in KV so the Durable Object's getFigmaAPI() can retrieve it
-				const patSessionId = "figma-console-mcp-default-session";
-				const patTokenKey = `oauth_token:${patSessionId}`;
-				await env.OAUTH_TOKENS.put(patTokenKey, JSON.stringify({
-					accessToken: bearerToken,
-					expiresAt: Date.now() + 3600_000, // 1-hour TTL for PAT session
-				}), { expirationTtl: 3600 });
-
 				logger.info({ pathname: url.pathname, user: patUser.handle }, "SSE request authenticated via Figma PAT");
 
-				// Proceed with SSE connection
-				return FigmaConsoleMCPv3.serveSSE("/sse").fetch(request, env, ctx);
+				// Hand this caller's own token to the session's Durable Object
+				return serveSSEWithToken(request, env, ctx, bearerToken);
 			}
 
 			// OAuth token path: look up in KV store
@@ -1260,8 +1139,8 @@ export default {
 				});
 			}
 
-			// Token is valid, proceed with SSE connection
-			return FigmaConsoleMCPv3.serveSSE("/sse").fetch(request, env, ctx);
+			// Token is valid — the Bearer token IS the Figma access token
+			return serveSSEWithToken(request, env, ctx, bearerToken);
 		}
 
 		// Streamable HTTP endpoint for MCP communication (current spec)
@@ -1372,7 +1251,7 @@ export default {
 
 			const statelessServer = new McpServer({
 				name: "Figma Console MCP",
-				version: "1.40.10",
+				version: "1.44.2",
 			});
 			wrapServerForIdentity(statelessServer);
 
@@ -1563,7 +1442,7 @@ export default {
 			const metadata = {
 				resource: url.origin,
 				authorization_servers: [`${url.origin}/`],
-				scopes_supported: ["file_content:read", "file_versions:read", "file_variables:read", "file_comments:read", "file_comments:write", "library_content:read"],
+				scopes_supported: FIGMA_OAUTH_SCOPES,
 				bearer_methods_supported: ["header"],
 				resource_signing_alg_values_supported: ["RS256"]
 			};
@@ -1583,7 +1462,7 @@ export default {
 				authorization_endpoint: `${url.origin}/authorize`,
 				token_endpoint: `${url.origin}/token`,
 				registration_endpoint: `${url.origin}/oauth/register`,
-				scopes_supported: ["file_content:read", "file_versions:read", "file_variables:read", "file_comments:read", "file_comments:write", "library_content:read"],
+				scopes_supported: FIGMA_OAUTH_SCOPES,
 				response_types_supported: ["code"],
 				grant_types_supported: ["authorization_code", "refresh_token"],
 				token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"],
@@ -1608,12 +1487,50 @@ export default {
 			const codeChallengeMethod = url.searchParams.get("code_challenge_method");
 			const scope = url.searchParams.get("scope");
 
-			// For MCP clients, use the client_id as the session identifier
-			// This allows token retrieval after the OAuth flow completes
-			const sessionId = clientId || FigmaConsoleMCPv3.generateStateToken();
+			// Random per-flow session id. (It used to be the client_id, which is
+			// public and shared by every user of a client.)
+			const sessionId = FigmaConsoleMCPv3.generateStateToken();
+			let needsConsent = false;
+			let clientName: string | null = null;
+
+			if (redirectUri && !state) {
+				return new Response(JSON.stringify({
+					error: "invalid_request",
+					error_description: "state is required with redirect_uri"
+				}), {
+					status: 400,
+					headers: { "Content-Type": "application/json" }
+				});
+			}
 
 			// Store the MCP client's redirect_uri and state for the callback
 			if (redirectUri && state) {
+				const registrationJson = clientId ? await env.OAUTH_STATE.get(`client:${clientId}`) : null;
+				const registration = registrationJson
+					? (JSON.parse(registrationJson) as { client_name?: string; redirect_uris?: string[] })
+					: null;
+				if (!isAllowedRedirectUri(redirectUri, registration?.redirect_uris ?? null)) {
+					logger.warn({ clientId, redirectUri }, "Refused /authorize: redirect_uri not registered for this client");
+					return new Response(JSON.stringify({
+						error: "invalid_request",
+						error_description: "redirect_uri is not registered for this client_id"
+					}), {
+						status: 400,
+						headers: { "Content-Type": "application/json" }
+					});
+				}
+				if (!codeChallenge || codeChallengeMethod !== "S256") {
+					return new Response(JSON.stringify({
+						error: "invalid_request",
+						error_description: "PKCE is required: send code_challenge with code_challenge_method=S256"
+					}), {
+						status: 400,
+						headers: { "Content-Type": "application/json" }
+					});
+				}
+				needsConsent = !isLoopbackOrTrustedRedirect(redirectUri);
+				if (registration?.client_name) clientName = registration.client_name;
+
 				const mcpAuthData = {
 					redirectUri,
 					state,
@@ -1647,20 +1564,80 @@ export default {
 			// Generate CSRF protection token
 			const stateToken = FigmaConsoleMCPv3.generateStateToken();
 
-			// Store state token with sessionId (10 minute expiration)
-			await env.OAUTH_STATE.put(stateToken, sessionId, {
+			// Store state token with sessionId (10 minute expiration), bound to
+			// THIS browser by a cookie the callback must see. Without it, an
+			// attacker could start a flow (passing any consent page in their own
+			// browser) and hand the resulting Figma sign-in link to a victim,
+			// whose approval would then deliver the code to the attacker.
+			const flowNonce = FigmaConsoleMCPv3.generateStateToken();
+			await env.OAUTH_STATE.put(stateToken, JSON.stringify({ sessionId, flowNonce }), {
 				expirationTtl: 600
 			});
+			const flowCookie = `${flowCookieName(stateToken)}=${flowNonce}; Path=/oauth/callback; Max-Age=600; HttpOnly; Secure; SameSite=Lax`;
 
 			// Redirect to Figma OAuth
 			const figmaAuthUrl = new URL("https://www.figma.com/oauth");
 			figmaAuthUrl.searchParams.set("client_id", env.FIGMA_OAUTH_CLIENT_ID);
 			figmaAuthUrl.searchParams.set("redirect_uri", `${oauthOrigin}/oauth/callback`);
-			figmaAuthUrl.searchParams.set("scope", "file_content:read,file_versions:read,file_variables:read,file_comments:read,file_comments:write,library_content:read");
+			figmaAuthUrl.searchParams.set("scope", FIGMA_OAUTH_SCOPES.join(","));
 			figmaAuthUrl.searchParams.set("state", stateToken);
 			figmaAuthUrl.searchParams.set("response_type", "code");
 
-			return Response.redirect(figmaAuthUrl.toString(), 302);
+			if (!needsConsent) {
+				return new Response(null, {
+					status: 302,
+					headers: { Location: figmaAuthUrl.toString(), "Set-Cookie": flowCookie, "Cache-Control": "no-store" }
+				});
+			}
+
+			// Consent interstitial for redirects that are neither loopback nor a
+			// trusted hosted client. The pending request is bound to a cookie set
+			// on THIS browser, so a link to /authorize/continue built from someone
+			// else's /authorize visit does nothing.
+			const consentNonce = FigmaConsoleMCPv3.generateStateToken();
+			await env.OAUTH_STATE.put(`consent:${consentNonce}`, figmaAuthUrl.toString(), {
+				expirationTtl: 600
+			});
+			const redirectParsed = new URL(redirectUri as string);
+			// https: the host is what matters; custom schemes (cursor://…): show it all
+			const destination = escapeHtml(redirectParsed.protocol === "https:" ? redirectParsed.host : (redirectUri as string));
+			return new Response(
+				`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Authorize access</title>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;max-width:480px;margin:64px auto;padding:0 24px;color:#000}a.button{display:inline-block;background:#18a0fb;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none}code{background:#f0f0f0;padding:2px 6px;border-radius:4px}</style></head>
+<body><h1>Authorize access to Figma?</h1>
+<p>${clientName ? `<strong>${escapeHtml(clientName)}</strong> (a name the app chose for itself)` : "An unregistered app"} is asking for access to your Figma account through Figma Console MCP.</p>
+<p>After you sign in, access will be sent to <code>${destination}</code>. Only continue if you started this from an app you trust.</p>
+<p><a class="button" href="/authorize/continue">Continue to Figma</a></p></body></html>`,
+				{
+					headers: [
+						["Content-Type", "text/html; charset=utf-8"],
+						["Set-Cookie", `fcm_consent=${consentNonce}; Path=/authorize; Max-Age=600; HttpOnly; Secure; SameSite=Lax`],
+						["Set-Cookie", flowCookie],
+						["Content-Security-Policy", "frame-ancestors 'none'"],
+						["X-Frame-Options", "DENY"],
+						["Cache-Control", "no-store"]
+					]
+				}
+			);
+		}
+
+		if (url.pathname === "/authorize/continue") {
+			const consentNonce = readCookie(request.headers.get("Cookie"), "fcm_consent");
+			const figmaAuthUrl = consentNonce ? await env.OAUTH_STATE.get(`consent:${consentNonce}`) : null;
+			if (!consentNonce || !figmaAuthUrl) {
+				return new Response("This authorization request has expired or was started in a different browser. Start the sign-in again from your MCP client.", {
+					status: 400,
+					headers: { "Content-Type": "text/plain; charset=utf-8" }
+				});
+			}
+			await env.OAUTH_STATE.delete(`consent:${consentNonce}`);
+			return new Response(null, {
+				status: 302,
+				headers: {
+					Location: figmaAuthUrl,
+					"Set-Cookie": "fcm_consent=; Path=/authorize; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
+				}
+			});
 		}
 
 		// MCP-compliant /token endpoint
@@ -1683,18 +1660,49 @@ export default {
 			const code = params.get("code");
 			const refreshToken = params.get("refresh_token");
 
-			// For authorization_code grant, exchange the code for tokens
+			// For authorization_code grant, exchange the code for tokens.
+			// Codes are random, one-time, expire in 10 minutes, and are bound to
+			// the client_id, redirect_uri and PKCE challenge of the /authorize
+			// request that produced them.
 			if (grantType === "authorization_code" && code) {
-				// The code here is actually our session-based token
-				// Look up the stored token by session/client ID
-				const sessionId = clientId || code;
-				const tokenKey = `oauth_token:${sessionId}`;
+				const invalidGrant = (description: string) => new Response(JSON.stringify({
+					error: "invalid_grant",
+					error_description: description
+				}), {
+					status: 400,
+					headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+				});
 
-				logger.info({ grantType, clientId, code, sessionId, tokenKey }, "Token exchange request");
+				const codeKey = `auth_code:${code}`;
+				const codeJson = await env.OAUTH_STATE.get(codeKey);
+				if (!codeJson) {
+					logger.warn({ clientId }, "Token exchange with unknown or expired authorization code");
+					return invalidGrant("Authorization code not found or expired. Please re-authenticate.");
+				}
+				await env.OAUTH_STATE.delete(codeKey);
 
-				const tokenJson = await env.OAUTH_TOKENS.get(tokenKey);
+				const codeData = JSON.parse(codeJson) as {
+					sessionId: string;
+					clientId?: string | null;
+					redirectUri: string;
+					codeChallenge?: string | null;
+				};
 
-				logger.info({ tokenKey, hasToken: !!tokenJson }, "Token lookup result");
+				if (codeData.clientId && clientId && codeData.clientId !== clientId) {
+					return invalidGrant("Authorization code was issued to a different client.");
+				}
+				const tokenRedirectUri = params.get("redirect_uri");
+				if (tokenRedirectUri && tokenRedirectUri !== codeData.redirectUri) {
+					return invalidGrant("redirect_uri does not match the authorization request.");
+				}
+				if (codeData.codeChallenge) {
+					const codeVerifier = params.get("code_verifier");
+					if (!codeVerifier || !(await verifyPkceS256(codeVerifier, codeData.codeChallenge))) {
+						return invalidGrant("PKCE verification failed.");
+					}
+				}
+
+				const tokenJson = await env.OAUTH_TOKENS.get(`oauth_token:${codeData.sessionId}`);
 
 				if (tokenJson) {
 					const tokenData = JSON.parse(tokenJson) as {
@@ -1709,7 +1717,7 @@ export default {
 						token_type: "Bearer",
 						expires_in: Math.max(0, Math.floor((tokenData.expiresAt - Date.now()) / 1000)),
 						refresh_token: tokenData.refreshToken,
-						scope: "file_content:read file_versions:read file_variables:read file_comments:read file_comments:write library_content:read"
+						scope: FIGMA_OAUTH_SCOPES.join(" ")
 					}), {
 						headers: {
 							"Content-Type": "application/json",
@@ -1718,14 +1726,8 @@ export default {
 					});
 				}
 
-				logger.error({ tokenKey, sessionId, clientId, code }, "Token not found for exchange");
-				return new Response(JSON.stringify({
-					error: "invalid_grant",
-					error_description: "Authorization code not found or expired. Please re-authenticate."
-				}), {
-					status: 400,
-					headers: { "Content-Type": "application/json" }
-				});
+				logger.error({ clientId }, "Token not found for exchange");
+				return invalidGrant("Authorization code not found or expired. Please re-authenticate.");
 			}
 
 			// For refresh_token grant
@@ -1772,35 +1774,21 @@ export default {
 					expires_in: number;
 				};
 
-				// Store the refreshed token
-				if (clientId) {
-					const tokenKey = `oauth_token:${clientId}`;
-					const expiresAt = Date.now() + (tokenData.expires_in * 1000);
-					const storedToken = {
-						accessToken: tokenData.access_token,
-						refreshToken: tokenData.refresh_token || refreshToken,
-						expiresAt
-					};
-					await env.OAUTH_TOKENS.put(tokenKey, JSON.stringify(storedToken), {
-						expirationTtl: tokenData.expires_in
-					});
-
-					// Store reverse lookup for Bearer token validation on SSE endpoint
-					const bearerKey = `bearer_token:${tokenData.access_token}`;
-					await env.OAUTH_TOKENS.put(bearerKey, JSON.stringify({
-						sessionId: clientId,
-						expiresAt
-					}), {
-						expirationTtl: tokenData.expires_in
-					});
-				}
+				// Store reverse lookup for Bearer token validation on SSE endpoint
+				const expiresAt = Date.now() + (tokenData.expires_in * 1000);
+				await env.OAUTH_TOKENS.put(`bearer_token:${tokenData.access_token}`, JSON.stringify({
+					sessionId: clientId || "refresh",
+					expiresAt
+				}), {
+					expirationTtl: tokenData.expires_in
+				});
 
 				return new Response(JSON.stringify({
 					access_token: tokenData.access_token,
 					token_type: "Bearer",
 					expires_in: tokenData.expires_in,
 					refresh_token: tokenData.refresh_token || refreshToken,
-					scope: "file_content:read file_versions:read file_variables:read file_comments:read file_comments:write library_content:read"
+					scope: FIGMA_OAUTH_SCOPES.join(" ")
 				}), {
 					headers: {
 						"Content-Type": "application/json",
@@ -1891,7 +1879,7 @@ export default {
 			const figmaAuthUrl = new URL("https://www.figma.com/oauth");
 			figmaAuthUrl.searchParams.set("client_id", env.FIGMA_OAUTH_CLIENT_ID);
 			figmaAuthUrl.searchParams.set("redirect_uri", redirectUri);
-			figmaAuthUrl.searchParams.set("scope", "file_content:read,file_versions:read,file_variables:read,file_comments:read,file_comments:write,library_content:read");
+			figmaAuthUrl.searchParams.set("scope", FIGMA_OAUTH_SCOPES.join(","));
 			figmaAuthUrl.searchParams.set("state", stateToken);
 			figmaAuthUrl.searchParams.set("response_type", "code");
 
@@ -1909,13 +1897,13 @@ export default {
 				return new Response(
 					`<html><body>
 						<h1>Authentication Failed</h1>
-						<p>Error: ${error}</p>
-						<p>Description: ${url.searchParams.get("error_description") || "Unknown error"}</p>
+						<p>Error: ${escapeHtml(error)}</p>
+						<p>Description: ${escapeHtml(url.searchParams.get("error_description") || "Unknown error")}</p>
 						<p>You can close this window and try again.</p>
 					</body></html>`,
 					{
 						status: 400,
-						headers: { "Content-Type": "text/html" }
+						headers: { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": "default-src 'none'" }
 					}
 				);
 			}
@@ -1924,8 +1912,21 @@ export default {
 				return new Response("Missing code or state parameter", { status: 400 });
 			}
 
-			// Validate state token (CSRF protection)
-			const sessionId = await env.OAUTH_STATE.get(stateToken);
+			// Validate state token (CSRF protection). MCP flows store
+			// { sessionId, flowNonce }; the legacy /oauth/authorize flow stores
+			// the bare session id.
+			const stateRecord = await env.OAUTH_STATE.get(stateToken);
+			let sessionId: string | null = stateRecord;
+			let flowNonce: string | null = null;
+			if (stateRecord && stateRecord.startsWith("{")) {
+				try {
+					const parsed = JSON.parse(stateRecord) as { sessionId: string; flowNonce?: string };
+					sessionId = parsed.sessionId;
+					flowNonce = parsed.flowNonce ?? null;
+				} catch {
+					sessionId = null;
+				}
+			}
 
 			logger.info({ stateToken, sessionId, hasSessionId: !!sessionId }, "OAuth callback - state token lookup");
 
@@ -1945,6 +1946,29 @@ export default {
 
 			// Delete state token after validation (one-time use)
 			await env.OAUTH_STATE.delete(stateToken);
+
+			// A flow that will hand a code back to an MCP client must finish in
+			// the browser that started it (see the flow cookie in /authorize).
+			// Checked BEFORE exchanging the Figma code, so a mismatched flow
+			// never obtains the user's token at all.
+			const pendingMcpAuth = await env.OAUTH_STATE.get(`mcp_auth:${sessionId}`);
+			if (pendingMcpAuth) {
+				const cookieNonce = readCookie(request.headers.get("Cookie"), flowCookieName(stateToken));
+				if (!flowNonce || cookieNonce !== flowNonce) {
+					await env.OAUTH_STATE.delete(`mcp_auth:${sessionId}`);
+					logger.warn({ sessionId }, "OAuth callback refused: flow finished in a different browser than it started");
+					return new Response(
+						`<html><body>
+						<h1>Sign-in could not be completed</h1>
+						<p>This sign-in link was started in a different browser, or it expired. For your security, start the sign-in again from your MCP client.</p>
+					</body></html>`,
+						{
+							status: 400,
+							headers: { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": "default-src 'none'" }
+						}
+					);
+				}
+			}
 
 			try {
 				// Exchange authorization code for access token
@@ -2008,17 +2032,6 @@ export default {
 					expirationTtl: expiresIn
 				});
 
-				// CRITICAL: Also store under the fixed session ID that Durable Objects use
-				// This ensures getFigmaAPI() can retrieve the token regardless of which
-				// session ID was used during OAuth (e.g., mcp-remote's client_id)
-				const fixedTokenKey = `oauth_token:figma-console-mcp-default-session`;
-				if (tokenKey !== fixedTokenKey) {
-					await env.OAUTH_TOKENS.put(fixedTokenKey, JSON.stringify(storedToken), {
-						expirationTtl: expiresIn
-					});
-					logger.info({ fixedTokenKey }, "Token also stored under fixed session ID for Durable Object access");
-				}
-
 				// Store reverse lookup for Bearer token validation on SSE endpoint
 				// This allows us to validate Authorization: Bearer <token> headers
 				const bearerKey = `bearer_token:${accessToken}`;
@@ -2053,9 +2066,17 @@ export default {
 					// Clean up the MCP auth state
 					await env.OAUTH_STATE.delete(mcpStateKey);
 
-					// Generate an authorization code for the MCP client
-					// We use the sessionId as the code since we've already stored the token
-					const authCode = sessionId;
+					// One-time authorization code bound to this request's client,
+					// redirect_uri and PKCE challenge (checked at /token)
+					const authCode = FigmaConsoleMCPv3.generateStateToken();
+					await env.OAUTH_STATE.put(`auth_code:${authCode}`, JSON.stringify({
+						sessionId,
+						clientId: mcpAuthData.clientId ?? null,
+						redirectUri: mcpAuthData.redirectUri,
+						codeChallenge: mcpAuthData.codeChallenge ?? null
+					}), {
+						expirationTtl: 600
+					});
 
 					// Build the redirect URL back to the MCP client
 					const redirectUrl = new URL(mcpAuthData.redirectUri);
@@ -2188,7 +2209,7 @@ export default {
 				JSON.stringify({
 					status: "healthy",
 					service: "Figma Console MCP",
-					version: "1.40.10",
+					version: "1.44.2",
 					endpoints: {
 						mcp: ["/sse", "/mcp"],
 						oauth_mcp_spec: ["/.well-known/oauth-authorization-server", "/authorize", "/token", "/oauth/register"],
@@ -2233,7 +2254,7 @@ export default {
 	// Local count and the data-mode="cloud" Cloud count). Remote has no count:
 	// it is the same hosted endpoint before pairing, so it is described, not counted.
 	if (url.pathname === "/") {
-		const landing = { version: "1.40.10" };
+		const landing = { version: "1.44.2" };
 		return new Response(
 			`<!DOCTYPE html>
 <html lang="en">

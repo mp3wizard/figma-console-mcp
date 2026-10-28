@@ -10,6 +10,7 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 export const MCP_NAME = "figma-console-mcp";
 
@@ -136,7 +137,10 @@ export function capToolResponse(result: unknown, maxBytes: number = MAX_TOOL_RES
  * Adds attribution coverage to every response path uniformly — see
  * project_lauren_cross_mcp_confusion for why this matters.
  */
-export function wrapServerForIdentity(server: McpServer): void {
+export function wrapServerForIdentity(
+	server: McpServer,
+	options: { onToolCall?: () => void } = {},
+): void {
 	// We have to bypass the McpServer.tool overload types because we're
 	// composing over arbitrary call signatures. The runtime behavior is
 	// the same regardless of which overload the caller invokes.
@@ -152,6 +156,7 @@ export function wrapServerForIdentity(server: McpServer): void {
 		const handler = args[args.length - 1] as (...a: unknown[]) => unknown;
 
 		const wrappedHandler = async (...handlerArgs: unknown[]): Promise<unknown> => {
+			options.onToolCall?.();
 			try {
 				const result = await handler(...handlerArgs);
 				return capToolResponse(tagToolResponse(result));
@@ -165,4 +170,51 @@ export function wrapServerForIdentity(server: McpServer): void {
 
 		return originalTool(...args.slice(0, -1), wrappedHandler);
 	};
+
+	// zod 4 emits `propertyNames: {type:"string"}` for every z.record(). It says
+	// nothing (JSON object keys are always strings), and Gemini rejects the
+	// keyword with a 400, so drop it from tools/list. The SDK registers that
+	// handler lazily on the first tool registration, which runs after this.
+	type SetRequestHandler = (schema: unknown, handler: (...a: unknown[]) => unknown) => unknown;
+	const protocol = (server as unknown as { server?: { setRequestHandler: SetRequestHandler } }).server;
+	if (typeof protocol?.setRequestHandler !== "function") return;
+	const originalSetRequestHandler = protocol.setRequestHandler.bind(protocol);
+	protocol.setRequestHandler = function (schema, handler) {
+		if (schema !== ListToolsRequestSchema) return originalSetRequestHandler(schema, handler);
+		return originalSetRequestHandler(schema, async (...a: unknown[]) => {
+			const result = (await handler(...a)) as { tools?: Array<Record<string, unknown>> };
+			if (!Array.isArray(result?.tools)) return result;
+			return {
+				...result,
+				tools: result.tools.map((tool) => ({
+					...tool,
+					inputSchema: stripStringPropertyNames(tool.inputSchema),
+					...(tool.outputSchema ? { outputSchema: stripStringPropertyNames(tool.outputSchema) } : {}),
+				})),
+			};
+		});
+	};
+}
+
+/**
+ * Return a copy of a JSON Schema with every `propertyNames: {type:"string"}`
+ * removed. Other propertyNames constraints (patterns, enums) are kept.
+ */
+export function stripStringPropertyNames(schema: unknown): unknown {
+	if (Array.isArray(schema)) return schema.map(stripStringPropertyNames);
+	if (schema === null || typeof schema !== "object") return schema;
+	const out: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(schema)) {
+		if (
+			key === "propertyNames" &&
+			value !== null &&
+			typeof value === "object" &&
+			Object.keys(value).length === 1 &&
+			(value as Record<string, unknown>).type === "string"
+		) {
+			continue;
+		}
+		out[key] = stripStringPropertyNames(value);
+	}
+	return out;
 }

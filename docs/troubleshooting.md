@@ -19,7 +19,7 @@ The fix lives in **both** the server and the redesigned Desktop Bridge plugin, s
    - Select `~/.figma-console-mcp/plugin/manifest.json` (the stable path the server maintains automatically)
 3. Run the Desktop Bridge plugin in your file. It auto-connects.
 
-> **You only have to do this once per plugin change.** After you're on v1.31.0+, updates don't need a re-import unless a release explicitly says so. The plugin files last changed in v1.39.0, so if your imported plugin is older than that, re-import it once. The plugin shows an update banner when the server bundles a newer plugin than the one running.
+> **You only have to do this once per plugin change.** After you're on v1.31.0+, updates don't need a re-import unless a release explicitly says so. The plugin files last changed in v1.41.5, so if your imported plugin is older than that, re-import it once. The plugin shows an update banner when the server bundles a newer plugin than the one running.
 
 ### Step 2 — Let it reconnect itself (no more restart ritual)
 
@@ -131,7 +131,7 @@ If you see `"valid": false`, the AI will provide step-by-step setup instructions
 
 #### Port 9223 Already in Use
 **Cause:** Another MCP server instance or orphaned process is running on port 9223.
-**Fix:** The server automatically cleans up orphaned MCP processes on startup and falls back to the next available port in the range 9223–9232. The plugin scans the whole range on launch and picks up whichever port the server bound to.
+**Fix:** The server automatically cleans up orphaned MCP processes on startup and falls back to the next available port in the range 9223–9232. The plugin scans the whole range on launch and picks up whichever port the server bound to. If all ten ports are in use, a new server ends the least recently used one — never one started or used in the last two minutes (v1.42.1). If you regularly run more than ten clients, consider [sharing one server over HTTP](#http-endpoint-issues).
 
 #### Plugin Shows "MCP scanning" or "Retry"
 **Cause:** The MCP server is not running yet, or all ports 9223–9232 are occupied.
@@ -146,6 +146,26 @@ If you see `"valid": false`, the AI will provide step-by-step setup instructions
 **Fix (v1.31.0+):** The server now force-kills orphans it finds — escalating `SIGTERM` → `SIGKILL` so even a hung process that ignores a graceful shutdown is cleared — on startup *and* on a 5-minute background sweep. A shutdown backstop also prevents a server from zombifying in the first place. In normal use you should never need to intervene. To inspect (not kill) what's holding ports: `lsof -i :9223-9232 | grep LISTEN`. To force-clear leftovers from before you upgraded, see [Start Here → Last resort](#last-resort--manually-clear-leftover-zombies-rarely-needed).
 
 > **Stable plugin path:** The MCP server automatically copies plugin files to `~/.figma-console-mcp/plugin/` on startup. Import from this path instead of the volatile npx cache path. Re-importing after a package update is optional — only required when the release notes call for it.
+
+#### 403 Forbidden from the Figma API
+**Cause:** Your personal access token is missing a scope that the tool's REST call needs. Figma answers **401** for a token it doesn't recognize, and **403** for a valid token without the right scope.
+**Fix:** Create a new token with the scopes in [Setup → Get your Figma token](/setup#step-1-get-your-figma-token-2-min), then update `FIGMA_ACCESS_TOKEN` and restart your MCP client. Which scope a 403 points to:
+- Component search, the design system kit, component docs, styles → **Library content** (`library_content:read`)
+- Looking up a published component by key → **Library assets** (`library_assets:read`)
+- Version history, changelogs, version diffs → **File versions** (`file_versions:read`)
+- Comments → **Comments** (`file_comments:read` / `file_comments:write`)
+- Variables over REST → **Variables** (`file_variables:read`, Enterprise only). On other plans, open the Desktop Bridge plugin; variables are then read through it and no scope is needed.
+
+Before v1.44.1, Cloud Mode rejected a token without **Current user** (`current_user:read`) as `invalid_token`. It now accepts it.
+
+#### HTTP endpoint issues
+These apply only when you've set `FIGMA_MCP_HTTP_PORT` to share one server over HTTP (v1.44.0). Run `figma_get_status` and look at `transport.mcpHttp`.
+- **`mcpHttp.error` says the port is in use:** another process, often another figma-console-mcp started with the same variable, already holds it. That server's URL is listed under `otherInstances[].mcpHttpUrl`; point your clients there, or choose another port. Avoid 3845 (Figma's Dev Mode MCP) and 9223–9232 (the bridge).
+- **403 "Host … is not allowed":** connect with `127.0.0.1` or `localhost` and the exact port. Other hostnames are refused to block DNS rebinding.
+- **403 "Origin … is not allowed":** the request came from a web page. Only pages served from localhost (such as MCP Inspector) are accepted.
+- **401:** `FIGMA_MCP_HTTP_TOKEN` is set; send `Authorization: Bearer <token>`.
+- **404 "Session not found":** the session closed (30 minutes idle, the server restarted, or more than 32 sessions). MCP clients re-initialize on their own.
+- **The endpoint disappears when an MCP client closes:** that client spawned the server, and the endpoint lives as long as the server does. Start the shared server in a terminal instead.
 
 #### Running in Docker
 **Cause:** The WebSocket server binds to `localhost` by default, which is unreachable from the Docker host.
@@ -195,6 +215,17 @@ You'll see all your `[Main]`, `[Swapper]`, `[Serializer]`, etc. plugin logs imme
 **That's it!** No navigation, no browser setup, no complex configuration.
 
 ---
+
+### Issue: "The Desktop Bridge plugin is still busy"
+
+**Symptom:** a call times out, the next one times out too, and later calls fail at once with *"The Desktop Bridge plugin is still busy with EXECUTE_CODE, sent 40s ago, so … was not sent."*
+
+**Cause:** Figma can't interrupt a plugin script once it's running. A long or stuck `figma_execute` script (a big synchronous loop, a walk over every node in a large file) keeps running after the server stops waiting for it, and every command sent after it waits in line behind it. Once two requests in a row time out, the server stops sending to that file instead of piling more work into the queue, work that could otherwise run long after you gave up on it.
+
+**Solutions:**
+1. Wait. When the script finishes, the plugin's late reply clears the busy state and commands go through again. The server also retries on its own after 10 minutes.
+2. To stop the script now, close and reopen the Desktop Bridge plugin in that file.
+3. For scripts that are meant to run long, pass a larger `timeout` to `figma_execute` (up to 300000 ms), or split the work into smaller calls.
 
 ### Issue: No Console Logs Captured
 
@@ -401,6 +432,12 @@ FIGMA_WS_PORT=9223
 
 # WebSocket bind host (set to 0.0.0.0 when running in Docker)
 FIGMA_WS_HOST=localhost
+
+# Also serve MCP over Streamable HTTP at http://127.0.0.1:<port>/mcp (off when unset)
+FIGMA_MCP_HTTP_PORT=9300
+
+# Require "Authorization: Bearer <token>" on that HTTP endpoint (optional)
+FIGMA_MCP_HTTP_TOKEN=change-me
 
 # Personal Access Token for the Figma REST API (local mode only)
 FIGMA_ACCESS_TOKEN=figd_xxx

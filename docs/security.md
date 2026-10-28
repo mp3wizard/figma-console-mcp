@@ -12,7 +12,7 @@ Figma Console MCP is designed with security as a priority. The project is **full
 <CardGroup cols={2}>
   <Card title="Local Mode" icon="laptop">
     **Recommended for security-sensitive environments**
-    - Runs entirely on localhost via stdio
+    - Runs entirely on localhost via stdio (optional loopback-only HTTP)
     - Zero external network calls
     - All communication stays local
   </Card>
@@ -42,7 +42,7 @@ Figma Console MCP uses **Figma's native authentication**:
     - Generated in Figma account settings
     - Stored locally in your MCP client config
     - Never transmitted except to `api.figma.com`
-    - Scoped permissions based on token configuration
+    - Limited to the scopes you grant: Figma Console MCP needs only read scopes plus comment write ([list](/setup#step-1-get-your-figma-token-2-min)). Note that a PAT can reach every file your account can; Figma doesn't allow narrowing it to specific files.
   </Accordion>
   <Accordion title="OAuth (Remote Mode)" icon="right-to-bracket">
     - Uses Figma's official OAuth 2.0 flow
@@ -97,6 +97,7 @@ Code runs in Figma's **plugin sandbox**, not your system. It cannot access your 
 All network communication is limited to:
 - `api.figma.com` — Figma's official REST API (HTTPS)
 - `localhost:9223–9232` — WebSocket Bridge (Desktop Bridge Plugin communication, port range for multi-instance support)
+- `127.0.0.1:<FIGMA_MCP_HTTP_PORT>` — Optional local MCP over HTTP, only when you set that variable
 - `*.workers.dev` — Remote mode only (HTTPS)
 
 ### WebSocket Bridge Security
@@ -104,6 +105,11 @@ All network communication is limited to:
 - **No authentication required** — Since it's localhost-only, the attack surface is limited to local processes
 - **Request/response correlation** — Each command uses a unique correlation ID to prevent response confusion
 - **Per-file isolation** — Multiple connected Figma files maintain independent state (selection, changes, console logs)
+
+### Optional HTTP Endpoint (Local Mode)
+- **Off by default** — Only `FIGMA_MCP_HTTP_PORT` turns on MCP over Streamable HTTP
+- **Loopback only** — Binds `127.0.0.1`; requests must name a localhost `Host` (blocks DNS rebinding) and may not come from a non-localhost browser `Origin` (blocks web pages)
+- **Optional bearer token** — `FIGMA_MCP_HTTP_TOKEN` requires `Authorization: Bearer <token>`, compared in constant time
 
 <Check>
 **No external dependencies at runtime** — No third-party analytics, CDNs, or external API calls beyond Figma.

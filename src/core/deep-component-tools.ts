@@ -30,15 +30,18 @@ export function registerDeepComponentTools(
 			depth: z.preprocess(
 				(v) => (typeof v === "string" ? Number(v) : v),
 				z.number().optional().default(10),
-			).describe("Maximum tree depth to traverse (default: 10, max: 20). Use higher values for deeply nested components."),
+			).describe("Maximum tree depth to traverse (default: 10). Pass 0 (or a negative value) for UNLIMITED depth — traverses the entire subtree. Unlimited/large results can be big; target a specific child node if the payload is unwieldy."),
 		},
 		async ({ nodeId, depth = 10 }) => {
 			try {
-				const clampedDepth = Math.min(Math.max(depth, 1), 20);
-				logger.info({ nodeId, depth: clampedDepth }, "Deep component extraction");
+				// depth <= 0 => unlimited (no clamp); positive values pass through as-is.
+				const unlimited = depth <= 0;
+				const effectiveDepth = unlimited ? 0 : Math.max(depth, 1);
+				const depthLabel: number | string = unlimited ? "unlimited" : effectiveDepth;
+				logger.info({ nodeId, depth: depthLabel }, "Deep component extraction");
 
 				const connector = await getDesktopConnector();
-				const result = await connector.deepGetComponent(nodeId, clampedDepth);
+				const result = await connector.deepGetComponent(nodeId, effectiveDepth);
 
 				if (!result || (result.success === false)) {
 					throw new Error(result?.error || "Failed to extract component");
@@ -55,11 +58,11 @@ export function registerDeepComponentTools(
 					component: data,
 					metadata: {
 						purpose: "deep_component_development",
-						treeDepth: clampedDepth,
+						treeDepth: depthLabel,
 						responseSizeKB: sizeKB,
 						variablesResolved: data._variableMapSize || 0,
 						note: [
-							`Deep component tree extracted via Plugin API (depth ${clampedDepth}).`,
+							`Deep component tree extracted via Plugin API (depth ${depthLabel}).`,
 							"boundVariables are resolved to token names, collections, and codeSyntax.",
 							"INSTANCE nodes include mainComponent references (key, name, component set).",
 							"Use this data to generate production-quality, token-aware, accessible code.",
@@ -102,7 +105,7 @@ export function registerDeepComponentTools(
 	// -----------------------------------------------------------------------
 	server.tool(
 		"figma_analyze_component_set",
-		"Analyze a Figma COMPONENT_SET to extract variant state machine and cross-variant diffs for code generation. Returns: (1) variant axes (size, state) with all values, (2) CSS pseudo-class mappings for interaction states (hover→:hover, focus→:focus-visible, disabled→:disabled, error→[aria-invalid]), (3) visual diff from default state per variant (only changed properties — fill token, stroke token, stroke weight, text color, opacity, effects, visibility), (4) component property definitions mapped to code props (BOOLEAN→boolean, TEXT→string, INSTANCE_SWAP→slot/ReactNode), and (5) slots — Figma SLOT properties (name, preferredValues = the components a slot accepts, and limitViolations) to implement as named slots / children props (React {children} or named ReactNode; Web Components <slot name>). Use this on the parent COMPONENT_SET node, not individual variants. Requires Desktop Bridge plugin.",
+		"Analyze a Figma COMPONENT_SET to extract variant state machine and cross-variant diffs for code generation. Returns: (1) variant axes (size, state) with all values, (2) CSS pseudo-class mappings for interaction states (hover→:hover, focus→:focus-visible, disabled→:disabled, error→[aria-invalid]), (3) visual diff from default state per variant (only changed properties — fill/stroke as token or hex, gradient, image and paint opacity, stroke weight, text color, opacity, effects, corner radius, size, child layers, visibility, the variant's own fill/stroke/opacity/radius (`variantFill`, `variantStroke`, `variantOpacity`, `variantRadius`), auto-layout (`layout`) and swapped spacing/size tokens (`tokens`), plus `layers`: changes to nested layers keyed by layer path such as 'Icons/Radio › Icon' — instance swaps, size, free position, rotation, vector shape, label text and typography), (4) component property definitions mapped to code props (BOOLEAN→boolean, TEXT→string, INSTANCE_SWAP→slot/ReactNode), and (5) slots — Figma SLOT properties (name, preferredValues = the components a slot accepts, and limitViolations) to implement as named slots / children props (React {children} or named ReactNode; Web Components <slot name>). Use this on the parent COMPONENT_SET node, not individual variants. Requires Desktop Bridge plugin.",
 		{
 			nodeId: z
 				.string()

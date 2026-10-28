@@ -63,8 +63,9 @@ export class CloudWebSocketConnector implements IFigmaConnector {
         return {
           success: true,
           timestamp: Date.now(),
+          fileKey: figma.fileKey || null,
           fileMetadata: { fileName: figma.root.name, fileKey: figma.fileKey || null },
-          variables: variables.map(function(v) { return { id: v.id, name: v.name, key: v.key, resolvedType: v.resolvedType, valuesByMode: v.valuesByMode, variableCollectionId: v.variableCollectionId, scopes: v.scopes, description: v.description, hiddenFromPublishing: v.hiddenFromPublishing }; }),
+          variables: variables.map(function(v) { return { id: v.id, name: v.name, key: v.key, resolvedType: v.resolvedType, valuesByMode: v.valuesByMode, variableCollectionId: v.variableCollectionId, scopes: v.scopes, codeSyntax: v.codeSyntax || {}, description: v.description, hiddenFromPublishing: v.hiddenFromPublishing }; }),
           variableCollections: collections.map(function(c) { return { id: c.id, name: c.name, key: c.key, modes: c.modes, defaultModeId: c.defaultModeId, variableIds: c.variableIds }; })
         };
       } catch (error) {
@@ -198,11 +199,15 @@ export class CloudWebSocketConnector implements IFigmaConnector {
 	}
 
 	async deepGetComponent(nodeId: string, depth?: number): Promise<any> {
-		return this.sendCommand('DEEP_GET_COMPONENT', { nodeId, depth: depth || 10 }, 30000);
+		// Same as WebSocketConnector (#86): depth <= 0 means unlimited, so it
+		// must not collapse to 10 via `||`.
+		const unlimited = typeof depth === "number" && depth <= 0;
+		const sentDepth = (depth === undefined || depth === null) ? 10 : depth;
+		return this.sendCommand('DEEP_GET_COMPONENT', { nodeId, depth: sentDepth }, unlimited ? 120000 : 30000);
 	}
 
 	async analyzeComponentSet(nodeId: string): Promise<any> {
-		return this.sendCommand('ANALYZE_COMPONENT_SET', { nodeId }, 30000);
+		return this.sendCommand('ANALYZE_COMPONENT_SET', { nodeId }, 120000);
 	}
 
 	async addComponentProperty(
@@ -269,11 +274,29 @@ export class CloudWebSocketConnector implements IFigmaConnector {
 	// Slot operations
 	// ============================================================================
 
-	async createSlot(nodeId: string, options?: { name?: string; width?: number; height?: number; layoutMode?: string }): Promise<any> {
+	private rejectFileKey(fileKey?: string): void {
+		// fileKey exists on these methods for IFigmaConnector parity but cannot be
+		// honored here — the cloud relay pairs with exactly one plugin instance,
+		// so there is no multi-file target to route between (matches
+		// executeCodeViaUI above). Reject rather than silently running against
+		// the paired file: a caller that asked for file B and got a successful
+		// write to file A has no way to tell from the response that it was misrouted.
+		if (fileKey) {
+			throw new Error(
+				'Per-file targeting (fileKey) is Local Mode only. Cloud Mode pairs with a single ' +
+				'plugin instance, so there is no second file to route to. Omit fileKey to run ' +
+				'against the paired file, or use Local Mode (NPX/Git) for multi-file work.'
+			);
+		}
+	}
+
+	async createSlot(nodeId: string, options?: { name?: string; width?: number; height?: number; layoutMode?: string }, fileKey?: string): Promise<any> {
+		this.rejectFileKey(fileKey);
 		return this.sendCommand('CREATE_SLOT', { nodeId, ...options });
 	}
 
-	async getSlots(nodeId: string): Promise<any> {
+	async getSlots(nodeId: string, fileKey?: string): Promise<any> {
+		this.rejectFileKey(fileKey);
 		return this.sendCommand('GET_SLOTS', { nodeId });
 	}
 
@@ -286,11 +309,13 @@ export class CloudWebSocketConnector implements IFigmaConnector {
 		properties?: Record<string, string | number>;
 		clone?: boolean;
 		clearExisting?: boolean;
-	}): Promise<any> {
+	}, fileKey?: string): Promise<any> {
+		this.rejectFileKey(fileKey);
 		return this.sendCommand('APPEND_TO_SLOT', params);
 	}
 
-	async resetSlot(params: { slotId?: string; instanceId?: string; slotName?: string }): Promise<any> {
+	async resetSlot(params: { slotId?: string; instanceId?: string; slotName?: string }, fileKey?: string): Promise<any> {
+		this.rejectFileKey(fileKey);
 		return this.sendCommand('RESET_SLOT', params);
 	}
 

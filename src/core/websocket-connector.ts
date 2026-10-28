@@ -108,8 +108,9 @@ export class WebSocketConnector implements IFigmaConnector {
         return {
           success: true,
           timestamp: Date.now(),
+          fileKey: figma.fileKey || null,
           fileMetadata: { fileName: figma.root.name, fileKey: figma.fileKey || null },
-          variables: variables.map(function(v) { return { id: v.id, name: v.name, key: v.key, resolvedType: v.resolvedType, valuesByMode: v.valuesByMode, variableCollectionId: v.variableCollectionId, scopes: v.scopes, description: v.description, hiddenFromPublishing: v.hiddenFromPublishing }; }),
+          variables: variables.map(function(v) { return { id: v.id, name: v.name, key: v.key, resolvedType: v.resolvedType, valuesByMode: v.valuesByMode, variableCollectionId: v.variableCollectionId, scopes: v.scopes, codeSyntax: v.codeSyntax || {}, description: v.description, hiddenFromPublishing: v.hiddenFromPublishing }; }),
           variableCollections: collections.map(function(c) { return { id: c.id, name: c.name, key: c.key, modes: c.modes, defaultModeId: c.defaultModeId, variableIds: c.variableIds }; })
         };
       } catch (error) {
@@ -233,11 +234,13 @@ export class WebSocketConnector implements IFigmaConnector {
   }
 
   async deepGetComponent(nodeId: string, depth?: number): Promise<any> {
-    return this.wsServer.sendCommand('DEEP_GET_COMPONENT', { nodeId, depth: depth || 10 }, 30000);
+    const unlimited = typeof depth === "number" && depth <= 0;
+    const sentDepth = (depth === undefined || depth === null) ? 10 : depth;
+    return this.wsServer.sendCommand('DEEP_GET_COMPONENT', { nodeId, depth: sentDepth }, unlimited ? 120000 : 30000);
   }
 
   async analyzeComponentSet(nodeId: string): Promise<any> {
-    return this.wsServer.sendCommand('ANALYZE_COMPONENT_SET', { nodeId }, 30000);
+    return this.wsServer.sendCommand('ANALYZE_COMPONENT_SET', { nodeId }, 120000);
   }
 
   async addComponentProperty(
@@ -299,12 +302,12 @@ export class WebSocketConnector implements IFigmaConnector {
   // Slot operations
   // ============================================================================
 
-  async createSlot(nodeId: string, options?: { name?: string; width?: number; height?: number; layoutMode?: string }): Promise<any> {
-    return this.wsServer.sendCommand('CREATE_SLOT', { nodeId, ...options });
+  async createSlot(nodeId: string, options?: { name?: string; width?: number; height?: number; layoutMode?: string }, fileKey?: string): Promise<any> {
+    return this.wsServer.sendCommand('CREATE_SLOT', { nodeId, ...options }, undefined, fileKey);
   }
 
-  async getSlots(nodeId: string): Promise<any> {
-    return this.wsServer.sendCommand('GET_SLOTS', { nodeId });
+  async getSlots(nodeId: string, fileKey?: string): Promise<any> {
+    return this.wsServer.sendCommand('GET_SLOTS', { nodeId }, undefined, fileKey);
   }
 
   async appendToSlot(params: {
@@ -316,12 +319,12 @@ export class WebSocketConnector implements IFigmaConnector {
     properties?: Record<string, string | number>;
     clone?: boolean;
     clearExisting?: boolean;
-  }): Promise<any> {
-    return this.wsServer.sendCommand('APPEND_TO_SLOT', params);
+  }, fileKey?: string): Promise<any> {
+    return this.wsServer.sendCommand('APPEND_TO_SLOT', params, undefined, fileKey);
   }
 
-  async resetSlot(params: { slotId?: string; instanceId?: string; slotName?: string }): Promise<any> {
-    return this.wsServer.sendCommand('RESET_SLOT', params);
+  async resetSlot(params: { slotId?: string; instanceId?: string; slotName?: string }, fileKey?: string): Promise<any> {
+    return this.wsServer.sendCommand('RESET_SLOT', params, undefined, fileKey);
   }
 
   // ============================================================================
