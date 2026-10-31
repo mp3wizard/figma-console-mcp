@@ -5,6 +5,47 @@ All notable changes to Figma Console MCP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.46.0] - 2026-10-29
+
+Shaders, layout, wide-gamut color and text typography, built on Figma's Plugin API Updates 130–141. Server-only: no plugin re-import needed.
+
+### Added
+
+- **`figma_list_shaders`** lists the shaders applied in a file, page or layer: each one's id, kind (fill or effect), the layers using it, and its properties with name, type and default. It also lists shaders from your libraries.
+- **`figma_apply_shader`** applies a shader to fills, strokes or effects, or changes one already applied, with properties set by name (`{turbulence: 40, cloudColor: "#E8F4FF"}`) instead of Figma's internal property keys. Colors take hex, any property can bind a variable, and an unknown name changes nothing and lists the valid ones.
+- **`figma_set_layout`** sets auto layout or grid layout in one call: direction, gap, padding, alignment including `SPACE_EVENLY` and `SPACE_AROUND`, wrap, and sizing; grid tracks written CSS-style (`"240px 1fr 1fr"`, `"repeat(3, 1fr)"`, `"auto"`), gaps, auto rows, auto flow, and child placement with spans. Before this, layout needed `figma_execute`.
+- **`figma_set_fills` and `figma_set_strokes` accept CSS colors**: `oklch()`, `oklab()`, `lab()`, `lch()`, `color(display-p3 …)`, `rgb()` and `hsl()`. Fully opaque OKLCH and P3 colors keep their source color space in Figma. Hex colors work exactly as before.
+- **`figma_set_text` sets text wrap style and variable-font axes**: `textWrapStyle` (`BALANCE` or `PRETTY`, like CSS `text-wrap`) and `fontVariations` (`{wght: 550}`), with the font's real axes listed when one is wrong. `text` is now optional, so styling can change without retyping the text.
+
+## [1.45.1] - 2026-10-29
+
+Patch, server-only: no plugin re-import needed.
+
+### Fixed
+
+- **`figma_get_code_layers` no longer hangs on a file in a background window.** Figma never answers dev-resource and related-link lookups while a file's window isn't focused, so the tool waited out its 2-minute timeout and returned nothing. Each lookup now gets 3 seconds, and after the first one runs out the rest are skipped. The tool returns the code layers it found, with `linksUnavailable: true` and a note to bring the file to the front for links.
+- **Tool docs match the tools again.** An audit of every tool's real parameters against the docs fixed examples that used parameters which don't exist: `figma_take_screenshot`, `figma_instantiate_component`, `figma_create_child`, `figma_add_component_property`, `figma_create_variable`, `figma_get_token_values` and `figma_set_text`. It also added sections for `figma_reconnect`, `figma_get_component_for_development_deep` and `figma_analyze_component_set`, and fixed the quick-reference grouping: Slots tools appeared under Code Layers, and component-property tools under Shared Library Variables. The homepage now covers Motion.
+
+## [1.45.0] - 2026-10-28
+
+Motion tools and motion tokens, built on Figma's Plugin API Updates 130–141. Server-only: no plugin re-import needed.
+
+### Added
+
+- **Motion tools.** Five new tools for Figma Motion (beta):
+  - `figma_get_animations` reads a layer's animation styles, keyframe tracks and timeline, with CSS easings and token bindings.
+  - `figma_apply_animation` animates a layer with a Figma preset, a custom animation style, or manual keyframes for any animatable property, paint color or effect. Easing can bind to an EASING variable and a preset's duration to a TIMING variable.
+  - `figma_remove_animation` removes an animation style, a keyframe track, or everything.
+  - `figma_manage_animation_styles` lists Figma's presets with their options, and creates, updates and deletes reusable custom animation styles.
+  - `figma_export_animation` exports an animated frame as MP4, GIF or WebM (Local Mode writes the file and won't replace an existing one without `overwrite: true`; Cloud Mode returns base64 up to 5 MB).
+- **`figma_get_code_layers`** finds Figma code layers on a page or across the file. Figma's APIs don't expose code-layer source, so the tool reports position, size and linked dev resources, and points to Figma's own MCP for creating and editing them.
+- **Motion tokens can be written.** `figma_import_tokens` now creates and updates TIMING and EASING variables from DTCG `duration` and `cubicBezier` tokens, where it used to skip them. `figma_create_variable`, `figma_batch_create_variables`, `figma_batch_update_variables` and `figma_setup_design_tokens` accept TIMING (seconds, `"300ms"`, `"0.3s"`) and EASING (`cubic-bezier(...)`, a Figma easing name, or `spring(bounce)`).
+
+### Fixed
+
+- **Easing variables export again.** Figma changed the EASING value shape in August 2026 (`easingFunctionCubicBezier` / `easingFunctionSpring`), and `figma_export_tokens` only read the earlier shape, so new easing variables exported as plain strings. Both shapes are read now. Springs and holds keep their exact value in `$extensions["figma-console-mcp"].spring` for round-trip, and changing only a spring's bounce is detected on import.
+- **No more endless motion-token diffs.** Figma stores motion numbers at 32-bit precision (0.2 reads back as 0.20000000298), so a re-import would always see a change. Exported easing curves and durations are rounded.
+
 ## [1.44.2] - 2026-10-27
 
 Cloud Mode fix, server-only: no plugin re-import needed.
@@ -1696,6 +1737,9 @@ Connection health protocol — agents no longer need custom health-check logic t
 - Real-time Figma Desktop Bridge plugin
 - Support for both local (stdio) and Cloudflare Workers deployment
 
+[1.46.0]: https://github.com/southleft/figma-console-mcp/compare/v1.45.1...v1.46.0
+[1.45.1]: https://github.com/southleft/figma-console-mcp/compare/v1.45.0...v1.45.1
+[1.45.0]: https://github.com/southleft/figma-console-mcp/compare/v1.44.2...v1.45.0
 [1.44.2]: https://github.com/southleft/figma-console-mcp/compare/v1.44.1...v1.44.2
 [1.44.1]: https://github.com/southleft/figma-console-mcp/compare/v1.44.0...v1.44.1
 [1.44.0]: https://github.com/southleft/figma-console-mcp/compare/v1.43.0...v1.44.0

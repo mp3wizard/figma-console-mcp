@@ -4,7 +4,7 @@ description: "A design-system-focused MCP server for Figma: bidirectional Figma-
 ---
 
 <Note>
-**Shared local server over HTTP, comment threads, security updates, plus reliability & data-safety fixes (latest v1.44.2):** set `FIGMA_MCP_HTTP_PORT` and several local MCP clients can share one server and its Figma connection over Streamable HTTP, loopback only (v1.44.0). The MCP SDK and zod are upgraded to clear seven security advisories, with no change to how tools behave (v1.43.0). Commands fail fast instead of piling up behind a plugin stuck on a timed-out script, and a new server no longer shuts down one a thread is using (v1.42.1). `figma_get_comments` returns compact comment threads with node, thread and date filters and paging, so a busy file no longer floods the conversation (v1.42.0). Cloud Mode sign-in is hardened: each session uses only its own Figma token, authorization codes are single-use and bound to the client that asked for them, and the accessibility scanner no longer runs scripts from the HTML it checks. Two data-loss fixes: `figma_import_tokens` refuses an import that read no token files (it used to plan deleting every variable) and `replace` only deletes inside the collections you import; arranging a component set no longer deletes the other arranged sets on the page. Token export and import read variables live, so renames show up immediately. Abandoned servers exit on Windows, batch-created variables accept aliases, and the Slots tools take `fileKey`. v1.41.1–v1.41.5 make component-set analysis report real variant differences, including changes inside nested layers (an icon swap, a token on a nested vector), the variant's own background and opacity, auto-layout, gradients, corner radius, typography and swapped tokens, stop component loading from timing out on large files, and fix variable paging. Re-import the plugin for the component fixes. [See what's new →](https://github.com/southleft/figma-console-mcp/blob/main/CHANGELOG.md#1442---2026-10-27)
+**Shaders, grid and auto layout, OKLCH and P3 color, text wrap and variable fonts (latest v1.46.0):** apply shaders and set their properties by name (`figma_apply_shader`, `figma_list_shaders`), set auto layout or grid layout in one call with CSS-style grid tracks (`figma_set_layout`), use OKLCH, Display P3 and other CSS colors on fills and strokes, and set text wrap (balance, pretty) and variable-font axes with `figma_set_text` (v1.46.0). v1.45 added Motion: animate layers with presets, custom animation styles or keyframes bound to Timing and Easing tokens, export video, and find code layers. [See what's new →](https://github.com/southleft/figma-console-mcp/blob/main/CHANGELOG.md#1460---2026-10-29)
 </Note>
 
 # Your Design System as an API
@@ -18,7 +18,7 @@ Figma Console MCP is a design-system-focused MCP server. It connects AI assistan
     Figma ⇄ code. Export variables to 10 token formats and import DTCG edits back with round-trip IDs, extract a design system from an existing codebase, and compare components with their code.
   </Card>
   <Card title="Writes to Figma" icon="wand-magic-sparkles">
-    Variables, components and component sets, Slots, annotations, FigJam boards, and Slides, plus any Plugin API code through `figma_execute`.
+    Variables, components and component sets, Slots, Motion animations, shaders, auto layout and grid layout, annotations, FigJam boards, and Slides, plus any Plugin API code through `figma_execute`.
   </Card>
   <Card title="Deterministic checks" icon="list-check">
     Rule-based checks that return the same result every run: design-code parity, accessibility on the canvas and in code, and design-system health.
@@ -156,7 +156,7 @@ Real component data. Real token values. Real code that uses your actual design s
 
     - `figma_get_console_logs` — Retrieve logs with filtering
     - `figma_watch_console` — Real-time log streaming
-    - `figma_take_screenshot` — Capture UI state for debugging
+    - `figma_take_screenshot` — Export an image of a page or node for visual checks
   </Accordion>
 
   <Accordion title="Design Creation" icon="paintbrush">
@@ -167,8 +167,12 @@ Real component data. Real token values. Real code that uses your actual design s
     - `figma_create_component_set` — Build a full variant set from an axes matrix (or combine existing components) in one call — variant keys returned, ready to instantiate
     - `figma_arrange_component_set` — Organize variants with labels
     - `figma_create_slot` / `figma_append_to_slot` — Add slots to components and populate them on instances (Figma Slots, GA at Config 2026), plus `figma_get_slots`, `figma_reset_slot`, and `figma_add_slot_property`
+    - `figma_apply_animation` / `figma_manage_animation_styles` — Animate layers with Figma Motion presets, custom animation styles or keyframes, with easing and duration bound to Timing/Easing tokens, plus `figma_get_animations`, `figma_remove_animation`, and `figma_export_animation` (MP4, GIF, WebM)
+    - `figma_get_code_layers` — Find Figma code layers on a page or across the file
+    - `figma_apply_shader` / `figma_list_shaders` — Apply shaders and set their properties by name
+    - `figma_set_layout` — Auto layout and grid layout in one call, with CSS-style grid tracks and child placement
     - `figma_create_variable` — Add design tokens
-    - Plus dedicated tools for creating, moving, resizing, cloning, renaming, and deleting nodes, and for text, fills, strokes, image fills, instance properties, and component properties
+    - Plus dedicated tools for creating, moving, resizing, cloning, renaming, and deleting nodes, and for text (including text wrap and variable-font axes), fills and strokes (including OKLCH and Display P3), image fills, instance properties, and component properties
   </Accordion>
 
   <Accordion title="Design-Code Parity & Documentation" icon="code-compare">
@@ -246,12 +250,12 @@ Real component data. Real token values. Real code that uses your actual design s
 
 <Columns cols={3}>
   <Card title="NPX Setup (Recommended)" icon="bolt" href="/setup#-npx-setup-recommended">
-    **Full capabilities — 121 tools**
+    **Full capabilities — 130 tools**
 
     All tools including real-time monitoring. Requires Node.js and a Figma token.
   </Card>
   <Card title="Cloud Mode" icon="cloud-arrow-up" href="/setup#-cloud-mode-web-ai-clients">
-    **Web AI clients — 96 tools**
+    **Web AI clients — 105 tools**
 
     Full write access from Claude.ai, v0, Replit, or Lovable. Pair with a code — no Node.js needed.
   </Card>
@@ -314,7 +318,7 @@ Real component data. Real token values. Real code that uses your actual design s
     Real scenarios and workflows
   </Card>
   <Card title="All Tools" icon="wrench" href="/tools">
-    Complete reference for 121 tools
+    Complete reference for 130 tools
   </Card>
   <Card title="Troubleshooting" icon="circle-question" href="/troubleshooting">
     Common issues and solutions

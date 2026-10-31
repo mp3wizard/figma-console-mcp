@@ -36,6 +36,10 @@ import { registerTokensTools } from "./core/tokens-tools.js";
 import { registerFigJamTools } from "./core/figjam-tools.js";
 import { registerSlidesTools } from "./core/slides-tools.js";
 import { registerSlotTools } from "./core/slot-tools.js";
+import { registerMotionTools } from "./core/motion-tools.js";
+import { registerCodeLayerTools } from "./core/code-layer-tools.js";
+import { registerShaderTools } from "./core/shader-tools.js";
+import { registerLayoutTools } from "./core/layout-tools.js";
 import { escapeHtml, isAllowedRedirectUri, isLoopbackOrTrustedRedirect, mintSseSessionId, readCookie, sseSessionBelongsTo, verifyPkceS256 } from "./core/oauth-security.js";
 
 // Re-export PluginRelayDO so Cloudflare Workers can bind it as a Durable Object
@@ -103,18 +107,13 @@ async function serveSSEWithToken(request: Request, env: Env, ctx: ExecutionConte
  */
 // Server version reported by figma_diagnose in both cloud endpoints.
 // scripts/release.sh keeps this current (it rewrites every `version: "x.y.z"` here).
-const cloudBuild = { version: "1.44.3" };
+const cloudBuild = { version: "1.46.0" };
 
 export class FigmaConsoleMCPv3 extends McpAgent {
-	// agents 0.7 types `server` against its own nested SDK 1.26 copy; ours is
-	// 1.32 (security fixes). Only connect() and the transport interface cross
-	// that boundary, and both are unchanged between the two. Moving to agents
-	// 0.30+ removes the split but needs a newer workerd and compatibility_date.
-	// @ts-expect-error -- same McpServer class from two SDK copies
-	server = (() => {
+	server =(() => {
 		const s = new McpServer({
 			name: "Figma Console MCP",
-			version: "1.44.3",
+			version: "1.46.0",
 		});
 		// Identity wrap — every tool's response and thrown error gets stamped
 		// with our MCP name so cross-MCP attribution is unambiguous.
@@ -903,6 +902,11 @@ export class FigmaConsoleMCPv3 extends McpAgent {
 
 		registerSlotTools(this.server, getCloudDesktopConnector);
 
+		registerMotionTools(this.server, getCloudDesktopConnector);
+		registerCodeLayerTools(this.server, getCloudDesktopConnector);
+		registerShaderTools(this.server, getCloudDesktopConnector);
+		registerLayoutTools(this.server, getCloudDesktopConnector);
+
 		// Register Figma API tools (Tools 8-14)
 		// Pass isRemoteMode: true to suppress Desktop Bridge mentions in tool descriptions
 		registerFigmaAPITools(
@@ -1251,7 +1255,7 @@ export default {
 
 			const statelessServer = new McpServer({
 				name: "Figma Console MCP",
-				version: "1.44.3",
+				version: "1.46.0",
 			});
 			wrapServerForIdentity(statelessServer);
 
@@ -1365,6 +1369,11 @@ export default {
 			registerSlidesTools(statelessServer, getCloudDesktopConnector);
 
 			registerSlotTools(statelessServer, getCloudDesktopConnector);
+
+			registerMotionTools(statelessServer, getCloudDesktopConnector);
+			registerCodeLayerTools(statelessServer, getCloudDesktopConnector);
+			registerShaderTools(statelessServer, getCloudDesktopConnector);
+			registerLayoutTools(statelessServer, getCloudDesktopConnector);
 
 			// Register REST API tools with the authenticated Figma API
 			registerFigmaAPITools(
@@ -2209,7 +2218,7 @@ export default {
 				JSON.stringify({
 					status: "healthy",
 					service: "Figma Console MCP",
-					version: "1.44.3",
+					version: "1.46.0",
 					endpoints: {
 						mcp: ["/sse", "/mcp"],
 						oauth_mcp_spec: ["/.well-known/oauth-authorization-server", "/authorize", "/token", "/oauth/register"],
@@ -2254,7 +2263,7 @@ export default {
 	// Local count and the data-mode="cloud" Cloud count). Remote has no count:
 	// it is the same hosted endpoint before pairing, so it is described, not counted.
 	if (url.pathname === "/") {
-		const landing = { version: "1.44.3" };
+		const landing = { version: "1.46.0" };
 		return new Response(
 			`<!DOCTYPE html>
 <html lang="en">
@@ -2263,13 +2272,13 @@ export default {
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Figma Console MCP: a design-system MCP server for Figma and code</title>
 	<link rel="icon" type="image/svg+xml" href="https://docs.figma-console-mcp.southleft.com/favicon.svg">
-	<meta name="description" content="An open-source MCP server for design systems. 121+ tools give AI assistants what they need to manage a design system across Figma and code: health and accessibility audits, design-code parity checks, two-way sync, write access to Figma, and generated docs.">
+	<meta name="description" content="An open-source MCP server for design systems. 130+ tools give AI assistants what they need to manage a design system across Figma and code: health and accessibility audits, design-code parity checks, two-way sync, write access to Figma, and generated docs.">
 
 	<!-- Open Graph -->
 	<meta property="og:type" content="website">
 	<meta property="og:url" content="https://figma-console-mcp.southleft.com">
 	<meta property="og:title" content="Figma Console MCP: keep Figma and code on the same design system">
-	<meta property="og:description" content="An open-source MCP server for design systems. 121+ tools give AI assistants what they need to manage a design system across Figma and code: health and accessibility audits, design-code parity checks, two-way sync, write access to Figma, and generated docs.">
+	<meta property="og:description" content="An open-source MCP server for design systems. 130+ tools give AI assistants what they need to manage a design system across Figma and code: health and accessibility audits, design-code parity checks, two-way sync, write access to Figma, and generated docs.">
 	<meta property="og:image" content="https://docs.figma-console-mcp.southleft.com/images/og-image.jpg">
 	<meta property="og:image:width" content="1200">
 	<meta property="og:image:height" content="630">
@@ -2277,7 +2286,7 @@ export default {
 	<!-- Twitter -->
 	<meta name="twitter:card" content="summary_large_image">
 	<meta name="twitter:title" content="Figma Console MCP: keep Figma and code on the same design system">
-	<meta name="twitter:description" content="An open-source MCP server for design systems. 121+ tools give AI assistants what they need to manage a design system across Figma and code: health and accessibility audits, design-code parity checks, two-way sync, write access to Figma, and generated docs.">
+	<meta name="twitter:description" content="An open-source MCP server for design systems. 130+ tools give AI assistants what they need to manage a design system across Figma and code: health and accessibility audits, design-code parity checks, two-way sync, write access to Figma, and generated docs.">
 	<meta name="twitter:image" content="https://docs.figma-console-mcp.southleft.com/images/og-image.jpg">
 
 	<meta name="theme-color" content="#0F766E">
@@ -3092,7 +3101,7 @@ export default {
 							<p class="claim">Changes land in the file, not in a chat reply.</p>
 						</div>
 						<div class="pillar-body">
-							<p>Create and edit variables and collections, components and component sets with variants, slots, and annotations. Build FigJam boards and Slides decks.</p>
+							<p>Create and edit variables and collections, components and component sets with variants, slots, and annotations. Animate layers with Figma Motion, with easing and duration bound to your motion tokens, and export the result as video. Apply shaders, set auto layout and grid layout, and use OKLCH and Display P3 colors. Build FigJam boards and Slides decks.</p>
 							<p class="muted">When no structured tool fits, run Plugin API code directly, in one file or across several open files at once.</p>
 						</div>
 						<div>
@@ -3101,6 +3110,8 @@ export default {
 								<li><code>figma_batch_create_variables</code></li>
 								<li><code>figma_create_component_set</code></li>
 								<li><code>figma_create_slot</code></li>
+								<li><code>figma_apply_animation</code></li>
+								<li><code>figma_set_layout</code></li>
 								<li><code>figma_set_annotations</code></li>
 								<li><code>figma_execute_across_files</code></li>
 							</ul>
@@ -3310,12 +3321,12 @@ All values are bound to space/* tokens.</code></pre>
 				<div class="modes">
 					<div class="mode">
 						<h3>Local</h3>
-						<p class="count"><span class="number">121+</span><span class="unit">tools</span></p>
+						<p class="count"><span class="number">130+</span><span class="unit">tools</span></p>
 						<p><strong>Everything</strong>, including writes, checks, and design-system extraction. Runs with npx next to Figma Desktop and the Desktop Bridge plugin.</p>
 					</div>
 					<div class="mode">
 						<h3>Cloud</h3>
-						<p class="count"><span data-mode="cloud">96</span><span class="unit">tools</span></p>
+						<p class="count"><span data-mode="cloud">105</span><span class="unit">tools</span></p>
 						<p><strong>For web AI clients</strong> such as Claude.ai. Pair the Desktop Bridge plugin with a code and keep write access.</p>
 					</div>
 					<div class="mode">
